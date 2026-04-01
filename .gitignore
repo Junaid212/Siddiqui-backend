@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+server/.env
+
+# Logs
+*.log
+mail_error.log
+error.txt
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Misc
+recent_bookings.json
+recent_bookings.txt
