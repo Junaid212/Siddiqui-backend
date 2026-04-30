@@ -9,13 +9,16 @@ const transporter = nodemailer.createTransport({
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
+  tls: {
+    rejectUnauthorized: false
+  }
 });
 
 async function testEmail() {
   try {
     const info = await transporter.sendMail({
       from: process.env.SMTP_FROM,
-      to: 'mohadjunaid212@gmail.com', // Replace with any test email
+      to: 'no-reply@siddiqui.digital',
       subject: "Test Email from Siddiqui Digital",
       text: "This is a test email to verify SMTP configuration.",
     });

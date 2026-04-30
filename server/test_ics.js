@@ -3,7 +3,7 @@ const generateICS = require('d:/Bright Media WORK/siddiqui-backend/server/utils/
 
 async function testICS() {
   try {
-    const icsFile = await generateICS("2026-03-19", "10:00", "mohadjunaid212@gmail.com");
+    const icsFile = await generateICS("2026-03-19", "10:00", "no-reply@siddiqui.digital");
     console.log("ICS generated successfully:");
     console.log(icsFile);
   } catch (error) {

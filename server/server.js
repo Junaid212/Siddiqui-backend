@@ -10,8 +10,26 @@ const blogRoutes = require("./routes/blogRoutes");
 
 const app = express();
 
-// CORS — allow all origins (adjust in production)
-app.use(cors());
+// CORS — explicit allowlist covering all production domains + local dev
+const allowedOrigins = [
+  'https://siddiqui.digital',
+  'https://www.siddiqui.digital',
+  'https://admin.siddiqui.digital',
+  'http://localhost:3000',
+  'http://localhost:5173',
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (e.g. curl, mobile apps, same-origin)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error(`CORS blocked: origin ${origin} is not allowed`));
+    }
+  },
+  credentials: true,
+}));
 
 // Parse JSON bodies for all routes EXCEPT the Stripe webhook
 app.use((req, res, next) => {

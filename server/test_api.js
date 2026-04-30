@@ -3,7 +3,7 @@ const http = require('http');
 const data = JSON.stringify({
   userId: null,
   name: "Test User",
-  email: "mohadjunaid212@gmail.com",
+  email: "no-reply@siddiqui.digital",
   phone: "1234567890",
   message: "Test message",
   date: "2026-03-24",

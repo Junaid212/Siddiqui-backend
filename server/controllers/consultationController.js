@@ -2,25 +2,39 @@ const supabase = require("../config/supabaseClient");
 const nodemailer = require("nodemailer");
 const generateICS = require("../utils/createCalendarInvite");
 
-// Nodemailer transport setup
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: process.env.SMTP_PORT,
-  secure: false, // true for 465, false for other ports
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
+/**
+ * Lazily create the Nodemailer transporter so env vars are guaranteed
+ * to be loaded before the transport is built.
+ */
+function getTransporter() {
+  const port = parseInt(process.env.SMTP_PORT, 10) || 465;
+  return nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: port,
+    secure: port === 465, // true for 465, false for other ports
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+    },
+    tls: {
+      rejectUnauthorized: false,
+    },
+    connectionTimeout: 15000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
+  });
+}
 
 /**
  * Send confirmation email to user with ICS calendar invite
  */
 const sendConfirmationEmail = async (email, date, time, name) => {
   const icsFile = await generateICS(date, time, email);
+  const transporter = getTransporter();
 
   await transporter.sendMail({
     from: process.env.SMTP_FROM,
+    replyTo: 'info@siddiqui.digital',
     to: email,
     subject: "Consultation Confirmation - Siddiqui Digital",
     html: `
@@ -60,6 +74,8 @@ const sendConfirmationEmail = async (email, date, time, name) => {
  * Send notification email to admin about new booking
  */
 const sendAdminNotification = async (name, email, phone, date, time, message) => {
+  const transporter = getTransporter();
+
   await transporter.sendMail({
     from: process.env.SMTP_FROM,
     to: process.env.ADMIN_EMAIL,
@@ -173,26 +189,47 @@ exports.bookConsultation = async (req, res) => {
 
     if (error) return res.status(400).json({ error: error.message });
 
-    // 3. Send confirmation emails (don't fail the booking if email fails)
+    // 3. Send confirmation emails independently — a failure in one must NOT
+    //    prevent the other from being sent.
     if (email) {
+      let userEmailSent = false;
+      let adminEmailSent = false;
+
+      // 3a. User confirmation email
       try {
         await sendConfirmationEmail(email, date, time, name);
-        await sendAdminNotification(name, email, phone, date, time, message);
-
-        // 4. Update email_sent = true after successful send (ONLY if column exists)
-        if (hasEmailSentColumn) {
-          await supabase
-            .from("consultations")
-            .update({ email_sent: true })
-            .eq("id", data.id);
-        }
-
-        console.log("📧 Confirmation emails sent successfully for booking:", data.id);
+        userEmailSent = true;
+        console.log("📧 User confirmation email sent to:", email);
       } catch (mailError) {
-        console.error("❌ Failed to send email:", mailError.message);
-        require('fs').appendFileSync('mail_error.log', new Date().toISOString() + ' - ' + mailError.stack + '\n');
-        // Booking is still saved with email_sent = false
+        console.error("❌ Failed to send USER confirmation email:", mailError.message);
+        require('fs').appendFileSync(
+          'mail_error.log',
+          `${new Date().toISOString()} [USER] ${mailError.stack}\n`
+        );
       }
+
+      // 3b. Admin notification email — runs regardless of user email outcome
+      try {
+        await sendAdminNotification(name, email, phone, date, time, message);
+        adminEmailSent = true;
+        console.log("📧 Admin notification email sent to:", process.env.ADMIN_EMAIL);
+      } catch (mailError) {
+        console.error("❌ Failed to send ADMIN notification email:", mailError.message);
+        require('fs').appendFileSync(
+          'mail_error.log',
+          `${new Date().toISOString()} [ADMIN] ${mailError.stack}\n`
+        );
+      }
+
+      // 4. Update email_sent = true only if at least the user email succeeded
+      if (userEmailSent && hasEmailSentColumn) {
+        await supabase
+          .from("consultations")
+          .update({ email_sent: true })
+          .eq("id", data.id);
+      }
+
+      console.log(`📊 Email summary for booking ${data.id}: user=${userEmailSent}, admin=${adminEmailSent}`);
     }
 
     res.json({
