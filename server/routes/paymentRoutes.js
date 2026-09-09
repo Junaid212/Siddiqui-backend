@@ -1,22 +1,33 @@
 const express = require("express");
 const router = express.Router();
 const {
-    getEbooks,
-    createCheckoutSession,
-    getOrderStatus,
-    stripeWebhook,
+  getProducts,
+  getProductById,
+  createCheckoutSession,
+  getOrderStatus,
+  downloadProductFile,
+  requestReplacementLink,
+  stripeWebhook,
 } = require("../controllers/paymentController");
 
-// Ebook catalog
-router.get("/ebooks", getEbooks);
+// Digital Products Catalog
+router.get("/products", getProducts);
+router.get("/products/:id", getProductById);
+router.get("/ebooks", getProducts); // Backward compatibility
 
-// Create Stripe checkout session
+// Checkout Session Creation
 router.post("/create-checkout", createCheckoutSession);
 
-// Check order status
-router.get("/order-status/:sessionId", getOrderStatus);
+// Order Status & Confirmation
+router.get("/order-status/:identifier", getOrderStatus);
 
-// Stripe webhook (raw body is handled in server.js)
+// Secure Download Endpoint
+router.get("/download/:token", downloadProductFile);
+
+// Replacement Link Request
+router.post("/request-replacement", requestReplacementLink);
+
+// Stripe Webhook
 router.post("/webhook", express.raw({ type: "application/json" }), stripeWebhook);
 
 module.exports = router;

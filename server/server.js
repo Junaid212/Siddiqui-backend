@@ -10,23 +10,28 @@ const blogRoutes = require("./routes/blogRoutes");
 
 const app = express();
 
-// CORS — explicit allowlist covering all production domains + local dev
+// CORS — explicit allowlist covering all production domains + all localhost ports in dev
 const allowedOrigins = [
   'https://siddiqui.digital',
   'https://www.siddiqui.digital',
   'https://admin.siddiqui.digital',
-  'http://localhost:3000',
-  'http://localhost:5173',
 ];
 
 app.use(cors({
   origin: function (origin, callback) {
     // Allow requests with no origin (e.g. curl, mobile apps, same-origin)
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error(`CORS blocked: origin ${origin} is not allowed`));
+    if (!origin) return callback(null, true);
+
+    // Allow any localhost origin in development (e.g. 3000, 5173, 5174, etc.)
+    if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+      return callback(null, true);
     }
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    callback(new Error(`CORS blocked: origin ${origin} is not allowed`));
   },
   credentials: true,
 }));
