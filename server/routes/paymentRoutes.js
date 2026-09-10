@@ -21,13 +21,17 @@ router.post("/create-checkout", createCheckoutSession);
 // Order Status & Confirmation
 router.get("/order-status/:identifier", getOrderStatus);
 
-// Secure Download Endpoint
+// Secure Download Endpoint (supports /download/:token and /download?token=...)
 router.get("/download/:token", downloadProductFile);
+router.get("/download", downloadProductFile);
+router.get("/ebooks/download", downloadProductFile);
+router.get("/ebooks/download/:token", downloadProductFile);
 
 // Replacement Link Request
 router.post("/request-replacement", requestReplacementLink);
 
-// Stripe Webhook
+// Stripe Webhook (supports /webhook and /stripe/webhook)
 router.post("/webhook", express.raw({ type: "application/json" }), stripeWebhook);
+router.post("/stripe/webhook", express.raw({ type: "application/json" }), stripeWebhook);
 
 module.exports = router;

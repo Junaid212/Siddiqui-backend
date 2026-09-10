@@ -19,18 +19,13 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (e.g. curl, mobile apps, same-origin)
     if (!origin) return callback(null, true);
-
-    // Allow any localhost origin in development (e.g. 3000, 5173, 5174, etc.)
     if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
       return callback(null, true);
     }
-
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
-
     callback(new Error(`CORS blocked: origin ${origin} is not allowed`));
   },
   credentials: true,
@@ -38,7 +33,11 @@ app.use(cors({
 
 // Parse JSON bodies for all routes EXCEPT the Stripe webhook
 app.use((req, res, next) => {
-  if (req.originalUrl === "/api/payment/webhook") {
+  if (
+    req.originalUrl === "/api/payment/webhook" ||
+    req.originalUrl === "/api/stripe/webhook" ||
+    req.originalUrl === "/api/payment/stripe/webhook"
+  ) {
     next();
   } else {
     express.json()(req, res, next);
@@ -50,6 +49,8 @@ app.use("/api/auth", authRoutes);
 app.use("/api/consultation", consultationRoutes);
 app.use("/api/questionnaire", questionnaireRoutes);
 app.use("/api/payment", paymentRoutes);
+app.use("/api/stripe", paymentRoutes);
+app.use("/api/ebooks", paymentRoutes);
 app.use("/api/blog", blogRoutes);
 
 // Health check
