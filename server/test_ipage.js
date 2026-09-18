@@ -1,32 +1,28 @@
 const nodemailer = require("nodemailer");
+require("dotenv").config();
 
 async function test(port, secure, pass) {
     let transporter = nodemailer.createTransport({
-        host: "smtp.ipage.com",
+        host: process.env.SMTP_HOST,
         port: port,
         secure: secure,
         auth: {
-            user: "no-reply@siddiqui.digital",
+            user: process.env.SMTP_USER,
             pass: pass,
         },
-        tls: {
-            rejectUnauthorized: false
-        }
     });
 
     try {
         await transporter.verify();
-        console.log(`SUCCESS with port ${port}, secure ${secure}, pass ${pass}`);
+        console.log(`SUCCESS with port ${port}, secure ${secure}`);
     } catch (e) {
-        console.log(`FAILED with port ${port}, secure ${secure}, pass ${pass}:`, e.message);
+        console.log(`FAILED with port ${port}, secure ${secure}:`, e.message);
     }
 }
 
 async function run() {
-    await test(465, true, "Noreply-siddiqui12");
-    await test(465, true, "NO-reply-sd-1234-@");
-    await test(587, false, "Noreply-siddiqui12");
-    await test(587, false, "NO-reply-sd-1234-@");
+    const port = Number.parseInt(process.env.SMTP_PORT, 10) || 465;
+    await test(port, port === 465, process.env.SMTP_PASS);
 }
 
 run();

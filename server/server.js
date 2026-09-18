@@ -7,6 +7,7 @@ const consultationRoutes = require("./routes/consultationRoutes");
 const questionnaireRoutes = require("./routes/questionnaireRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const blogRoutes = require("./routes/blogRoutes");
+const publicRoutes = require("./routes/publicRoutes");
 
 const app = express();
 
@@ -52,6 +53,7 @@ app.use("/api/payment", paymentRoutes);
 app.use("/api/stripe", paymentRoutes);
 app.use("/api/ebooks", paymentRoutes);
 app.use("/api/blog", blogRoutes);
+app.use("/api/public", publicRoutes);
 
 // Health check
 app.get("/api/health", (req, res) => {

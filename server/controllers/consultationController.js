@@ -16,9 +16,6 @@ function getTransporter() {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS,
     },
-    tls: {
-      rejectUnauthorized: false,
-    },
     connectionTimeout: 15000,
     greetingTimeout: 10000,
     socketTimeout: 15000,
@@ -236,6 +233,10 @@ exports.bookConsultation = async (req, res) => {
       success: true,
       message: "Consultation booked successfully!",
       consultation: data,
+      emailDelivery: {
+        customer: userEmailSent,
+        admin: adminEmailSent,
+      },
     });
   } catch (error) {
     console.error("Booking error:", error);

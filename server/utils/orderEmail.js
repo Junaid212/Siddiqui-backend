@@ -3,15 +3,12 @@ const nodemailer = require("nodemailer");
 function getTransporter() {
   const port = parseInt(process.env.SMTP_PORT, 10) || 465;
   return nodemailer.createTransport({
-    host: process.env.SMTP_HOST || "smtp.ipage.com",
+    host: process.env.SMTP_HOST,
     port: port,
     secure: port === 465,
     auth: {
-      user: process.env.SMTP_USER || "no-reply@siddiqui.digital",
-      pass: process.env.SMTP_PASS || "Noreply-siddiqui12",
-    },
-    tls: {
-      rejectUnauthorized: false,
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
     },
     connectionTimeout: 15000,
     greetingTimeout: 10000,
