@@ -87,7 +87,13 @@ exports.getComments = async (req, res) => {
             return true;
         });
 
-        res.json({ comments: approvedComments });
+        const sanitizedComments = approvedComments.map(c => ({
+            ...c,
+            user_name: (c.is_admin || (c.user_name && c.user_name.toLowerCase().trim() === 'admin'))
+                ? 'M. Q. Siddiqui'
+                : (c.user_name || 'Reader'),
+        }));
+        res.json({ comments: sanitizedComments });
     } catch (err) {
         console.error("Get comments error:", err);
         res.status(500).json({ error: "Failed to fetch comments" });

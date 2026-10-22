@@ -2,6 +2,7 @@ const Stripe = require("stripe");
 const crypto = require("crypto");
 const supabase = require("../config/supabaseClient");
 const { sendOrderConfirmationEmail } = require("../utils/orderEmail");
+const { ensureCustomerAccount } = require("../utils/customerAuth");
 const { getProductFile, setProductFile } = require("../utils/productFileStore");
 const { saveOrderMetadata, getOrderMetadata, findOrderMetadataByToken } = require("../utils/orderStore");
 require("dotenv").config();
@@ -269,9 +270,10 @@ exports.getProductById = async (req, res) => {
  */
 exports.createCheckoutSession = async (req, res) => {
   const productId = req.body.productId || req.body.id;
-  const customerEmail = (req.body.customerEmail || req.body.email || "").trim();
-  const customerName = (req.body.customerName || req.body.name || "").trim() || "Valued Customer";
+  const customerEmail = (req.body.customerEmail || req.body.email || "").trim().toLowerCase();
+  const customerName = (req.body.customerName || req.body.name || "").trim() || "Valued Reader";
   const userId = req.body.userId || null;
+  const marketingOptIn = req.body.marketingOptIn || false;
 
   if (!productId) {
     return res.status(400).json({ error: "Product ID is required to initiate checkout." });
@@ -282,7 +284,7 @@ exports.createCheckoutSession = async (req, res) => {
   }
 
   try {
-    // 1. Resolve product strictly from database
+    // 1. Resolve product strictly from database or verified catalog
     let product = null;
     const { data: dbProduct } = await supabase
       .from("ebooks")
@@ -295,7 +297,7 @@ exports.createCheckoutSession = async (req, res) => {
         id: String(dbProduct.id),
         title: dbProduct.title,
         price: Number(dbProduct.price) || 49.00,
-        currency: dbProduct.currency || "AED",
+        currency: dbProduct.currency || "USD",
         cover_image: dbProduct.cover_image,
         download_limit: dbProduct.download_limit || 3,
         download_expiry_hours: dbProduct.download_expiry_hours || 72,
@@ -308,13 +310,92 @@ exports.createCheckoutSession = async (req, res) => {
       return res.status(404).json({ error: "Digital product not found in catalog." });
     }
 
-    const priceNum = Number(product.price);
-    const currencyStr = (product.currency || "AED").toLowerCase();
+    // 2. Server-side Ownership & Upgrade Verification
+    const { data: customerOrders } = await supabase
+      .from("orders")
+      .select("*")
+      .ilike("email", customerEmail)
+      .in("status", ["paid", "successful"]);
+
+    let ownsOnline = false;
+    let ownsCompanion = false;
+    let priorOnlineOrder = null;
+
+    (customerOrders || []).forEach((o) => {
+      const amt = Number(o.amount) || 0;
+      const name = String(o.book_name || "").toLowerCase();
+      if (amt >= 40 || name.includes("companion") || name.includes("49.99") || name.includes("upgrade")) {
+        ownsCompanion = true;
+      }
+      if ((amt >= 18 && amt <= 25) || name.includes("online") || name.includes("20")) {
+        ownsOnline = true;
+        priorOnlineOrder = o;
+      }
+    });
+
+    // Rule 1: Customer already owns Digital Companion Edition -> Block duplicate purchase
+    if (ownsCompanion) {
+      return res.status(400).json({
+        error: "You already own the complete Digital Companion Edition. You have full access to read online and download files."
+      });
+    }
+
+    const requestedAccessType = req.body.accessType || (req.body.isUpgrade ? "companion" : null);
+    let isUpgrade = Boolean(req.body.isUpgrade);
+    let priceNum = 49.99;
+    let editionType = "companion";
+    let editionLabel = "Digital Companion Edition";
+    let currencyStr = (req.body.currency || product.currency || "USD").toLowerCase();
+
+    // Rule 2: Owns Online Edition, purchasing Companion -> must be an Upgrade ($29.99)
+    if (ownsOnline && (requestedAccessType === "companion" || !requestedAccessType || isUpgrade)) {
+      isUpgrade = true;
+      editionType = "companion";
+      editionLabel = "Upgrade to Digital Companion Edition";
+      const priorPaid = priorOnlineOrder ? Number(priorOnlineOrder.amount) : 20.00;
+      priceNum = Math.round(Math.max(29.99, 49.99 - priorPaid) * 100) / 100;
+    } else if (isUpgrade && !ownsOnline) {
+      // Rule 3: Claimed upgrade without verified Online Edition ownership
+      return res.status(400).json({
+        error: "Upgrade pricing is only available to verified owners of the Online Reading Edition."
+      });
+    } else if (requestedAccessType === "online" || Number(req.body.amount) === 20) {
+      // Rule 4: Buying Online Edition when already owned -> Block duplicate
+      if (ownsOnline) {
+        return res.status(400).json({
+          error: "You already own the Online Reading Edition. You have full access to read this publication in your account."
+        });
+      }
+      editionType = "online";
+      editionLabel = "Online Reading Edition";
+      priceNum = 20.00;
+    } else {
+      editionType = "companion";
+      editionLabel = "Digital Companion Edition";
+      priceNum = 49.99;
+    }
+
+    // Apply valid discounts only if not an upgrade
+    const discountCode = req.body.discountCode || null;
+    const discountPercentage = Number(req.body.discountPercentage || 0);
+    if (!isUpgrade && discountPercentage > 0 && discountPercentage <= 100) {
+      const discountAmount = Math.round(((priceNum * discountPercentage) / 100) * 100) / 100;
+      priceNum = Math.max(0, Math.round((priceNum - discountAmount) * 100) / 100);
+    }
+
     const orderNumber = `ORD-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
     const orderId = crypto.randomUUID();
+
+    let resolvedUserId = userId;
+    try {
+      const userObj = await ensureCustomerAccount({ email: customerEmail, name: customerName, editionType });
+      if (userObj && !resolvedUserId) resolvedUserId = userObj.id;
+    } catch (e) {
+      console.warn("[createCheckoutSession] ensureCustomerAccount:", e.message);
+    }
     const clientUrl = process.env.CLIENT_URL || "https://siddiqui.digital";
 
-    // 2. Validate server-side Stripe secret key
+    // 3. Validate server-side Stripe secret key
     if (!stripeSecretKey || stripeSecretKey.includes("placeholder") || stripeSecretKey.includes("your")) {
       console.error("[createCheckoutSession] Stripe secret key is not properly configured on server.");
       return res.status(500).json({
@@ -322,7 +403,7 @@ exports.createCheckoutSession = async (req, res) => {
       });
     }
 
-    // 3. Create Stripe Checkout Session
+    // 4. Create Stripe Checkout Session
     const sessionConfig = {
       payment_method_types: ["card"],
       customer_email: customerEmail,
@@ -331,8 +412,12 @@ exports.createCheckoutSession = async (req, res) => {
           price_data: {
             currency: currencyStr,
             product_data: {
-              name: product.title,
-              description: "Official Digital Publication (PDF Edition) — Instant Delivery",
+              name: `${product.title} — ${editionLabel}`,
+              description: isUpgrade
+                ? "Upgrade Difference: Online Reading, PDF download & Full Companion Pack"
+                : editionType === "online"
+                ? "Online Reading Edition — Protected In-Browser Reader"
+                : "Digital Companion Edition — Downloadable PDF & Companion Pack",
               images: product.cover_image && product.cover_image.startsWith("http") ? [product.cover_image] : undefined,
             },
             unit_amount: Math.round(priceNum * 100),
@@ -345,12 +430,16 @@ exports.createCheckoutSession = async (req, res) => {
         orderId,
         orderNumber,
         productId: String(product.id),
-        productName: product.title,
+        productName: `${product.title} — ${editionLabel}`,
         customerName,
         customerEmail,
+        editionType,
+        isUpgrade: String(isUpgrade),
+        originalOrderId: priorOnlineOrder?.id || "",
+        marketingOptIn: String(Boolean(marketingOptIn)),
       },
       success_url: `${clientUrl}/order-success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${clientUrl}/order-cancel?product_id=${product.id}`,
+      cancel_url: `${clientUrl}/publications`,
     };
 
     let session;
@@ -363,26 +452,29 @@ exports.createCheckoutSession = async (req, res) => {
       });
     }
 
-    // 4. Record order in Supabase and persistent orderStore
+    // 5. Record order in Supabase and persistent orderStore
     const orderRecord = {
       id: orderId,
-      user_id: userId,
+      user_id: resolvedUserId,
+      marketing_opt_in: Boolean(marketingOptIn),
       email: customerEmail,
       customer_name: customerName,
       product_id: product.id,
       order_number: orderNumber,
       stripe_session_id: session.id,
-      book_name: product.title,
+      book_name: `${product.title} — ${editionLabel}`,
       amount: priceNum,
-      currency: (product.currency || "AED").toUpperCase(),
+      currency: currencyStr.toUpperCase(),
       status: "pending",
-      download_limit: product.download_limit || 3,
+      download_limit: editionType === "online" ? 0 : (product.download_limit || 3),
       download_expires_at: new Date(Date.now() + (product.download_expiry_hours || 72) * 3600 * 1000).toISOString(),
     };
 
     saveOrderMetadata(orderId, {
       ...orderRecord,
       orderId,
+      editionType,
+      isUpgrade,
     });
 
     const { error: insertErr } = await executeWithSchemaFallback(
@@ -446,6 +538,14 @@ exports.stripeWebhook = async (req, res) => {
     const customerName = metadata.customerName || session.customer_details?.name || "Valued Customer";
     const productName = metadata.productName || "Digital Publication";
     const amount = session.amount_total ? (session.amount_total / 100).toFixed(2) : "49.00";
+    const detectedEdition = (Number(amount) >= 40 || String(productName).toLowerCase().includes("companion") || metadata.accessType === "companion") ? "companion" : "online";
+    try {
+      if (customerEmail) {
+        await ensureCustomerAccount({ email: customerEmail, name: customerName, editionType: detectedEdition });
+      }
+    } catch (e) {
+      console.warn("[stripeWebhook] ensureCustomerAccount:", e.message);
+    }
     const currency = (session.currency || "AED").toUpperCase();
 
     // Look up existing order safely
@@ -512,6 +612,7 @@ exports.stripeWebhook = async (req, res) => {
           amount,
           currency,
           downloadUrl,
+          editionType: detectedEdition,
           expiryHours,
           downloadLimit: 3,
         });
@@ -663,6 +764,19 @@ exports.downloadProductFile = async (req, res) => {
     if (order.status !== "paid" && order.status !== "successful") {
       return res.status(403).json({
         error: "Payment verification pending. Please complete payment before downloading."
+      });
+    }
+
+    // Enforce Online Edition download restriction server-side:
+    // Online Reading Edition does NOT include authorized PDF download.
+    const amtNum = Number(order.amount) || 0;
+    const bName = String(order.book_name || "").toLowerCase();
+    const isOnlineOnlyEdition = (order.edition_type === "online" || (amtNum >= 18 && amtNum <= 25) || bName.includes("online")) &&
+      !bName.includes("companion") && !bName.includes("upgrade") && amtNum < 40;
+
+    if (isOnlineOnlyEdition) {
+      return res.status(403).json({
+        error: "This order is for the Online Reading Edition ($20.00), which includes protected in-browser reading only. PDF file downloads and full Companion Packs are exclusively included with the Digital Companion Edition ($49.99). Please upgrade your account to download the file."
       });
     }
 
@@ -836,5 +950,85 @@ exports.requestReplacementLink = async (req, res) => {
   } catch (error) {
     console.error("[requestReplacementLink] Error:", error);
     return res.status(500).json({ error: "Failed to process replacement request." });
+  }
+};
+
+
+/**
+ * GET /api/payment/read/:token — Secure In-Browser Online Reader Stream
+ * Delivers protected inline document streaming for verified purchasers only.
+ * Disallows downloading via strict headers.
+ */
+exports.readOnlineBook = async (req, res) => {
+  const token = req.params.token || req.query.token || req.query.order_id || req.query.session_id;
+
+  if (!token || token === "undefined" || token === "null") {
+    return res.status(400).json({ error: "Access token is required to view publication." });
+  }
+
+  try {
+    const order = await findOrderByIdentifier(token);
+
+    if (!order) {
+      return res.status(404).json({ error: "Order not found. Please sign in to your reader account." });
+    }
+
+    if (order.status !== "paid" && order.status !== "successful") {
+      return res.status(403).json({ error: "Payment verification required to access online reader." });
+    }
+
+    if (order.status === "refunded") {
+      return res.status(403).json({ error: "This purchase has been refunded. Online reading access is revoked." });
+    }
+
+    // Resolve product
+    let product = null;
+    if (order.product_id) {
+      const { data: prodData } = await supabase.from("ebooks").select("*").eq("id", order.product_id).maybeSingle();
+      product = prodData;
+    }
+    if (!product && order.book_name) {
+      const { data: prodByName } = await supabase.from("ebooks").select("*").ilike("title", `%${order.book_name}%`).maybeSingle();
+      product = prodByName;
+    }
+    if (!product) {
+      product = DEFAULT_PRODUCTS[0];
+    }
+
+    const specificFilePath = resolveProductFilePath(product);
+    if (!specificFilePath) {
+      return res.status(404).json({ error: "Publication content is not currently available for online reading." });
+    }
+
+    const candidateBuckets = ["digital-products", "product-covers", "blogs"];
+    let fileBuffer = null;
+
+    for (const bucketName of candidateBuckets) {
+      const cleanPath = specificFilePath.startsWith(`${bucketName}/`)
+        ? specificFilePath.replace(`${bucketName}/`, "")
+        : specificFilePath;
+
+      const { data: fileBlob, error: storageErr } = await supabase.storage.from(bucketName).download(cleanPath);
+      if (!storageErr && fileBlob) {
+        fileBuffer = Buffer.from(await fileBlob.arrayBuffer());
+        break;
+      }
+    }
+
+    if (!fileBuffer) {
+      return res.status(404).json({ error: "The protected publication file could not be loaded." });
+    }
+
+    // Security headers: display inline, forbid caching, disallow sniffing
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="reader-preview-${order.id ? order.id.slice(0, 8) : 'book'}.pdf"`);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Cache-Control", "private, no-cache, no-store, must-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    return res.send(fileBuffer);
+  } catch (err) {
+    console.error("[readOnlineBook] Error:", err);
+    return res.status(500).json({ error: "Failed to stream publication for online reading." });
   }
 };

@@ -8,11 +8,12 @@ const {
   createCheckoutSession,
   getOrderStatus,
   downloadProductFile,
+  readOnlineBook,
   requestReplacementLink,
   stripeWebhook,
 } = require("../controllers/paymentController");
 const { validateDiscount } = require("../controllers/discountController");
-const { createCartCheckout, getCustomerOrders } = require("../controllers/cartController");
+const { createCartCheckout, getCustomerOrders, checkOwnership } = require("../controllers/cartController");
 
 // Digital Products Catalog
 router.get("/products", getProducts);
@@ -28,11 +29,16 @@ router.post("/create-cart-checkout", createCartCheckout);
 // Discount Code Validation
 router.post("/validate-discount", validateDiscount);
 
-// Customer Order History
+// Customer Order History & Ownership Verification
 router.get("/my-orders", getCustomerOrders);
+router.get("/check-ownership", checkOwnership);
 
 // Order Status & Confirmation
 router.get("/order-status/:identifier", getOrderStatus);
+
+// Protected Online Reader Endpoint (in-browser view, no download)
+router.get("/read/:token", readOnlineBook);
+router.get("/read", readOnlineBook);
 
 // Secure Download Endpoint
 router.get("/download/:token", downloadProductFile);

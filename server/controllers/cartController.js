@@ -10,6 +10,7 @@ const Stripe = require("stripe");
 const crypto = require("crypto");
 const supabase = require("../config/supabaseClient");
 const { sendOrderConfirmationEmail } = require("../utils/orderEmail");
+const { ensureCustomerAccount } = require("../utils/customerAuth");
 const { saveOrderMetadata, getOrderMetadata } = require("../utils/orderStore");
 require("dotenv").config();
 
@@ -57,6 +58,7 @@ exports.createCartCheckout = async (req, res) => {
     discountCode,
     discountAmount = 0,
     currency = "AED",
+    marketingOptIn = false,
   } = req.body;
 
   // Validation
@@ -65,6 +67,54 @@ exports.createCartCheckout = async (req, res) => {
   }
   if (!lineItems || lineItems.length === 0) {
     return res.status(400).json({ error: "At least one item is required in the cart." });
+  }
+
+  // Server-side Ownership & Upgrade Verification for Cart Checkout
+  try {
+    const { data: customerOrders } = await supabase
+      .from("orders")
+      .select("*")
+      .ilike("email", customerEmail.trim())
+      .in("status", ["paid", "successful"]);
+
+    let ownsOnline = false;
+    let ownsCompanion = false;
+
+    (customerOrders || []).forEach((o) => {
+      const amt = Number(o.amount) || 0;
+      const name = String(o.book_name || "").toLowerCase();
+      if (amt >= 40 || name.includes("companion") || name.includes("49.99") || name.includes("upgrade")) {
+        ownsCompanion = true;
+      }
+      if ((amt >= 18 && amt <= 25) || name.includes("online") || name.includes("20")) {
+        ownsOnline = true;
+      }
+    });
+
+    for (const item of lineItems) {
+      const isCompanionItem = (Number(item.price) >= 40) || String(item.title).toLowerCase().includes("companion") || item.accessType === "companion";
+      const isOnlineItem = (item.accessType === "online" || Number(item.price) === 20);
+
+      if (ownsCompanion) {
+        return res.status(400).json({
+          error: "You already own the complete Digital Companion Edition. You cannot re-purchase this publication."
+        });
+      }
+
+      if (ownsOnline && isOnlineItem) {
+        return res.status(400).json({
+          error: "You already own the Online Reading Edition. You have full access to read this publication in your account."
+        });
+      }
+
+      if (item.isUpgrade && !ownsOnline) {
+        return res.status(400).json({
+          error: "Upgrade pricing ($29.99) is only available to verified owners of the Online Reading Edition."
+        });
+      }
+    }
+  } catch (err) {
+    console.warn("[createCartCheckout] Ownership pre-check notice:", err.message);
   }
 
   // Stripe key check
@@ -79,6 +129,15 @@ exports.createCartCheckout = async (req, res) => {
     const orderNumber = `ORD-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
     const orderId = crypto.randomUUID();
     const currencyStr = currency.toLowerCase();
+    const hasCompanionEdition = lineItems.some(i => (Number(i.price) >= 40) || String(i.title).toLowerCase().includes("companion") || i.accessType === "companion");
+    const editionType = hasCompanionEdition ? "companion" : "online";
+    let resolvedUserId = userId;
+    try {
+      const userObj = await ensureCustomerAccount({ email: customerEmail, name: customerName, editionType });
+      if (userObj && !resolvedUserId) resolvedUserId = userObj.id;
+    } catch (e) {
+      console.warn("[createCartCheckout] ensureCustomerAccount notice:", e.message);
+    }
 
     // Build Stripe line_items
     const stripeLineItems = lineItems.map((item) => ({
@@ -108,6 +167,8 @@ exports.createCartCheckout = async (req, res) => {
         productIds: lineItems.map((i) => i.productId).join(","),
         discountCode: discountCode || "",
         discountAmount: String(discountAmount),
+        marketingOptIn: String(Boolean(marketingOptIn)),
+        editionType,
       },
       success_url: `${clientUrl}/order-success?session_id={CHECKOUT_SESSION_ID}&order_id=${orderId}`,
       cancel_url: `${clientUrl}/publications`,
@@ -145,7 +206,8 @@ exports.createCartCheckout = async (req, res) => {
 
     const orderRecord = {
       id: orderId,
-      user_id: userId,
+      user_id: resolvedUserId,
+      marketing_opt_in: Boolean(marketingOptIn),
       email: customerEmail.trim(),
       customer_name: customerName.trim() || "Valued Customer",
       book_name: lineItems.length === 1 ? lineItems[0].title : `${lineItems.length} items: ${productSummary.substring(0, 120)}`,
@@ -238,5 +300,72 @@ exports.getCustomerOrders = async (req, res) => {
   } catch (err) {
     console.error("[getCustomerOrders] Error:", err);
     return res.status(500).json({ error: "Failed to load order history." });
+  }
+};
+
+
+/**
+ * GET /api/payment/check-ownership?email=...
+ * Checks what book edition a customer already owns to enforce access & upgrade rules:
+ * - Owns $20 edition: can upgrade to $49.99 edition for $29.99
+ * - Owns $49.99 edition: block $20 and $49.99 purchases with "You already own this edition"
+ * - Owns same edition: block purchase with "You already own this edition"
+ */
+exports.checkOwnership = async (req, res) => {
+  const email = (req.query.email || "").trim().toLowerCase();
+
+  if (!email) {
+    return res.status(400).json({ error: "Email address is required." });
+  }
+
+  try {
+    const { data: orders, error } = await supabase
+      .from("orders")
+      .select("*")
+      .ilike("email", email)
+      .in("status", ["paid", "successful"])
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("[checkOwnership] Supabase error:", error);
+      return res.status(500).json({ error: "Failed to verify ownership." });
+    }
+
+    let ownsOnline = false;
+    let ownsCompanion = false;
+    let highestEdition = null;
+
+    (orders || []).forEach((o) => {
+      const amt = Number(o.amount) || 0;
+      const name = (o.book_name || "").toLowerCase();
+
+      // Digital Companion or Upgrade
+      if (amt >= 40 || name.includes("companion") || name.includes("49.99") || name.includes("upgrade")) {
+        ownsCompanion = true;
+      }
+      // Online reading edition
+      if ((amt >= 18 && amt <= 25) || name.includes("online reading") || name.includes("20")) {
+        ownsOnline = true;
+      }
+    });
+
+    if (ownsCompanion) {
+      highestEdition = "companion";
+    } else if (ownsOnline) {
+      highestEdition = "online";
+    }
+
+    return res.json({
+      owned: !!highestEdition,
+      edition: highestEdition,
+      ownsOnline,
+      ownsCompanion,
+      canUpgrade: ownsOnline && !ownsCompanion,
+      upgradeDifference: 29.99,
+      orders: orders || [],
+    });
+  } catch (err) {
+    console.error("[checkOwnership] Error:", err);
+    return res.status(500).json({ error: "Failed to check ownership status." });
   }
 };
