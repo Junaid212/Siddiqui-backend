@@ -40,5 +40,64 @@
     "download_count": 0,
     "download_limit": 3,
     "updatedAt": "2026-09-10T09:51:36.834Z"
+  },
+  "4771606f-975a-4b6e-a2c4-2ba0d5a27b19": {
+    "orderId": "4771606f-975a-4b6e-a2c4-2ba0d5a27b19",
+    "email": "online_owner_1792735295215@example.com",
+    "amount": 20,
+    "currency": "USD",
+    "book_name": "Marketing Reclassified — Online Reading Edition",
+    "access_tier": "online",
+    "status": "paid",
+    "payment_provider": "paypal",
+    "updatedAt": "2026-10-23T06:01:35.217Z"
+  },
+  "e084d94a-1a24-4e7f-b4d1-bfda5e9497c8": {
+    "orderId": "e084d94a-1a24-4e7f-b4d1-bfda5e9497c8",
+    "email": "online_owner_1792735438221@example.com",
+    "amount": 20,
+    "currency": "USD",
+    "book_name": "Marketing Reclassified — Online Reading Edition",
+    "access_tier": "online",
+    "status": "paid",
+    "payment_provider": "paypal",
+    "updatedAt": "2026-10-23T06:03:58.224Z"
+  },
+  "a0f319d8-25b6-4478-944d-db15e2b1e92a": {
+    "id": "a0f319d8-25b6-4478-944d-db15e2b1e92a",
+    "user_id": "93e47a52-3cb7-4476-9f82-c1249b2dce01",
+    "email": "debug@example.com",
+    "customer_name": "Valued Reader",
+    "product_id": "04b84648-3609-4b31-9ded-2486bacf1e74",
+    "order_number": "ORD-PAYHIP-test_tx_debug_001-79D7",
+    "book_name": "Marketing Reclassified (Digital Companion Edition)",
+    "amount": 49.99,
+    "currency": "USD",
+    "status": "paid",
+    "payment_provider": "payhip",
+    "payhip_transaction_id": "test_tx_debug_001",
+    "provider_transaction_id": "test_tx_debug_001",
+    "access_tier": "companion",
+    "is_upgrade": false,
+    "download_token": "045b935dd4494a2baa425345fbab16d4bef008d63027b09c474a988a706e99fc",
+    "download_expires_at": "2026-10-26T06:04:32.385Z",
+    "download_count": 0,
+    "download_limit": 3,
+    "webhook_event_id": "test_tx_debug_001",
+    "raw_metadata": {
+      "payhip_payload": {
+        "id": "test_tx_debug_001",
+        "items": [
+          {
+            "product_id": "2804256",
+            "product_name": "Marketing Reclassified (Digital Companion Edition)",
+            "price": 4999,
+            "quantity": 1
+          }
+        ]
+      }
+    },
+    "orderId": "a0f319d8-25b6-4478-944d-db15e2b1e92a",
+    "updatedAt": "2026-10-23T06:04:41.934Z"
   }
 }

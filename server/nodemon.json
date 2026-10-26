@@ -1,0 +1,16 @@
+{
+  "watch": [
+    "server.js",
+    "controllers/",
+    "routes/",
+    "utils/",
+    "config/"
+  ],
+  "ignore": [
+    "data/*",
+    "data/**",
+    "*.json",
+    "recent_bookings.*",
+    "test_*"
+  ]
+}

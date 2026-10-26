@@ -244,7 +244,46 @@ async function sendSetPasswordEmail({ to, customerName, setPasswordLink, edition
   }
 }
 
+
+async function sendPartialRefundAdminNotification({
+  transactionId,
+  buyerEmail,
+  orderNumber,
+  bookName,
+  originalAmount,
+  refundAmount,
+  currency,
+  reason
+}) {
+  const adminEmail = process.env.ADMIN_EMAIL || process.env.SMTP_USER || "info@siddiqui.digital";
+  try {
+    const transporter = getTransporter();
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || '"Siddiqui.Digital Alerts" <info@siddiqui.digital>',
+      to: adminEmail,
+      subject: `[ALERT] Partial Refund on Payhip Order: ${orderNumber || transactionId}`,
+      html: `
+        <h3>Partial Refund Notification</h3>
+        <p>A partial refund was recorded on Payhip. Customer digital access has been <strong>preserved</strong>.</p>
+        <ul>
+          <li><strong>Transaction ID:</strong> ${transactionId}</li>
+          <li><strong>Order Number:</strong> ${orderNumber || "N/A"}</li>
+          <li><strong>Customer:</strong> ${buyerEmail}</li>
+          <li><strong>Item:</strong> ${bookName || "Digital Book"}</li>
+          <li><strong>Original Amount:</strong> ${currency || "USD"} ${originalAmount || "N/A"}</li>
+          <li><strong>Refunded Amount:</strong> ${currency || "USD"} ${refundAmount || "N/A"}</li>
+          <li><strong>Reason:</strong> ${reason || "Partial refund processed via Payhip"}</li>
+        </ul>
+      `,
+    });
+    console.log(`[orderEmail] Partial refund admin notification sent to ${adminEmail}`);
+  } catch (err) {
+    console.warn(`[orderEmail] Failed to send partial refund admin notification:`, err.message);
+  }
+}
+
 module.exports = {
+  sendPartialRefundAdminNotification,
   sendOrderConfirmationEmail,
   sendSetPasswordEmail,
 };

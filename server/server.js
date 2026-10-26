@@ -9,6 +9,7 @@ const paymentRoutes = require("./routes/paymentRoutes");
 const blogRoutes = require("./routes/blogRoutes");
 const publicRoutes = require("./routes/publicRoutes");
 const askSidRoutes = require("./routes/askSidRoutes");
+const webhookRoutes = require("./routes/webhookRoutes");
 
 const app = express();
 
@@ -38,7 +39,8 @@ app.use((req, res, next) => {
   if (
     req.originalUrl === "/api/payment/webhook" ||
     req.originalUrl === "/api/stripe/webhook" ||
-    req.originalUrl === "/api/payment/stripe/webhook"
+    req.originalUrl === "/api/payment/stripe/webhook" ||
+    req.originalUrl === "/api/webhooks/stripe"
   ) {
     next();
   } else {
@@ -56,6 +58,7 @@ app.use("/api/ebooks", paymentRoutes);
 app.use("/api/blog", blogRoutes);
 app.use("/api/public", publicRoutes);
 app.use("/api/ask-sid", askSidRoutes);
+app.use("/api/webhooks", webhookRoutes);
 
 // Health check
 app.get("/api/health", (req, res) => {

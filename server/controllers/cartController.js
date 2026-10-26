@@ -11,7 +11,7 @@ const crypto = require("crypto");
 const supabase = require("../config/supabaseClient");
 const { sendOrderConfirmationEmail } = require("../utils/orderEmail");
 const { ensureCustomerAccount } = require("../utils/customerAuth");
-const { saveOrderMetadata, getOrderMetadata } = require("../utils/orderStore");
+const { saveOrderMetadata, getOrderMetadata, getOrdersByEmail } = require("../utils/orderStore");
 require("dotenv").config();
 
 const stripeSecretKey = process.env.STRIPE_SECRET_KEY || "";
@@ -286,6 +286,10 @@ exports.getCustomerOrders = async (req, res) => {
         currency: order.currency || "AED",
         status: order.status || "pending",
         email: order.email || email,
+        payment_provider: order.payment_provider || meta.payment_provider || (order.stripe_session_id ? "stripe" : order.paypal_order_id ? "paypal" : "payhip"),
+        access_tier: order.access_tier || meta.access_tier || (Number(order.amount) < 30 ? "online" : "companion"),
+        paypal_order_id: order.paypal_order_id || meta.paypal_order_id || null,
+        payhip_transaction_id: order.payhip_transaction_id || meta.payhip_transaction_id || null,
         stripe_session_id: order.stripe_session_id || null,
         download_token: order.download_token || order.stripe_session_id || order.id,
         download_count: Number(order.download_count) || 0,
@@ -327,15 +331,18 @@ exports.checkOwnership = async (req, res) => {
       .order("created_at", { ascending: false });
 
     if (error) {
-      console.error("[checkOwnership] Supabase error:", error);
-      return res.status(500).json({ error: "Failed to verify ownership." });
+      console.warn("[checkOwnership] Supabase query notice:", error.message);
     }
+
+    // Merge in orders from metadata store for full resilience
+    const metaOrders = typeof getOrdersByEmail === "function" ? getOrdersByEmail(email) : [];
+    const combinedOrders = [...(orders || []), ...metaOrders];
 
     let ownsOnline = false;
     let ownsCompanion = false;
     let highestEdition = null;
 
-    (orders || []).forEach((o) => {
+    combinedOrders.forEach((o) => {
       const amt = Number(o.amount) || 0;
       const name = (o.book_name || "").toLowerCase();
 

@@ -1,0 +1,274 @@
+{
+  "11111111-1111-1111-1111-111111111111": {
+    "orderId": "11111111-1111-1111-1111-111111111111",
+    "order_number": "ORD-TEST-AAA",
+    "product_id": "04b84648-3609-4b31-9ded-2486bacf1e74",
+    "productName": "Marketing Reclassified",
+    "download_token": "token_secret_test_a_1789033885469",
+    "stripe_session_id": "cs_live_test_session_product_a",
+    "status": "refunded",
+    "download_count": 0,
+    "download_limit": 3,
+    "updatedAt": "2026-09-10T09:51:36.153Z"
+  },
+  "22222222-2222-2222-2222-222222222222": {
+    "orderId": "22222222-2222-2222-2222-222222222222",
+    "order_number": "ORD-TEST-PENDING",
+    "product_id": "04b84648-3609-4b31-9ded-2486bacf1e74",
+    "download_token": "token_pending_1789033886475",
+    "status": "pending",
+    "updatedAt": "2026-09-10T09:51:26.674Z"
+  },
+  "33333333-3333-3333-3333-333333333333": {
+    "orderId": "33333333-3333-3333-3333-333333333333",
+    "order_number": "ORD-TEST-BBB",
+    "product_id": "ba9acc66-a824-47c4-a4aa-5abb1a153437",
+    "productName": "The value drift index",
+    "download_token": "token_secret_test_b_1789033888011",
+    "status": "paid",
+    "download_count": 0,
+    "download_limit": 3,
+    "updatedAt": "2026-09-10T09:51:28.215Z"
+  },
+  "44444444-4444-4444-4444-444444444444": {
+    "orderId": "44444444-4444-4444-4444-444444444444",
+    "order_number": "ORD-TEST-CCC",
+    "product_id": "b4492051-cce5-4213-974b-72c74da19196",
+    "productName": "The adaptive value framework",
+    "download_token": "token_secret_test_c_1789033896609",
+    "status": "paid",
+    "download_count": 0,
+    "download_limit": 3,
+    "updatedAt": "2026-09-10T09:51:36.834Z"
+  },
+  "4771606f-975a-4b6e-a2c4-2ba0d5a27b19": {
+    "orderId": "4771606f-975a-4b6e-a2c4-2ba0d5a27b19",
+    "email": "online_owner_1792735295215@example.com",
+    "amount": 20,
+    "currency": "USD",
+    "book_name": "Marketing Reclassified — Online Reading Edition",
+    "access_tier": "online",
+    "status": "paid",
+    "payment_provider": "paypal",
+    "updatedAt": "2026-10-23T06:01:35.217Z"
+  },
+  "e084d94a-1a24-4e7f-b4d1-bfda5e9497c8": {
+    "orderId": "e084d94a-1a24-4e7f-b4d1-bfda5e9497c8",
+    "email": "online_owner_1792735438221@example.com",
+    "amount": 20,
+    "currency": "USD",
+    "book_name": "Marketing Reclassified — Online Reading Edition",
+    "access_tier": "online",
+    "status": "paid",
+    "payment_provider": "paypal",
+    "updatedAt": "2026-10-23T06:03:58.224Z"
+  },
+  "a0f319d8-25b6-4478-944d-db15e2b1e92a": {
+    "id": "a0f319d8-25b6-4478-944d-db15e2b1e92a",
+    "user_id": "93e47a52-3cb7-4476-9f82-c1249b2dce01",
+    "email": "debug@example.com",
+    "customer_name": "Valued Reader",
+    "product_id": "04b84648-3609-4b31-9ded-2486bacf1e74",
+    "order_number": "ORD-PAYHIP-test_tx_debug_001-79D7",
+    "book_name": "Marketing Reclassified (Digital Companion Edition)",
+    "amount": 49.99,
+    "currency": "USD",
+    "status": "paid",
+    "payment_provider": "payhip",
+    "payhip_transaction_id": "test_tx_debug_001",
+    "provider_transaction_id": "test_tx_debug_001",
+    "access_tier": "companion",
+    "is_upgrade": false,
+    "download_token": "045b935dd4494a2baa425345fbab16d4bef008d63027b09c474a988a706e99fc",
+    "download_expires_at": "2026-10-26T06:04:32.385Z",
+    "download_count": 0,
+    "download_limit": 3,
+    "webhook_event_id": "test_tx_debug_001",
+    "raw_metadata": {
+      "payhip_payload": {
+        "id": "test_tx_debug_001",
+        "items": [
+          {
+            "product_id": "2804256",
+            "product_name": "Marketing Reclassified (Digital Companion Edition)",
+            "price": 4999,
+            "quantity": 1
+          }
+        ]
+      }
+    },
+    "orderId": "a0f319d8-25b6-4478-944d-db15e2b1e92a",
+    "updatedAt": "2026-10-23T06:04:41.934Z"
+  },
+  "e2530799-4d9a-4580-8a50-d95181239f46": {
+    "id": "e2530799-4d9a-4580-8a50-d95181239f46",
+    "user_id": "c6195dd6-fb9f-44a3-857e-75d4155038dd",
+    "email": "payhip_test_1792735694929@example.com",
+    "customer_name": "Valued Reader",
+    "product_id": "04b84648-3609-4b31-9ded-2486bacf1e74",
+    "order_number": "ORD-PAYHIP-TX_1792735694929-BC3B",
+    "book_name": "Marketing Reclassified (Digital Companion Edition)",
+    "amount": 49.99,
+    "currency": "USD",
+    "status": "paid",
+    "payment_provider": "payhip",
+    "payhip_transaction_id": "TX_1792735694929",
+    "provider_transaction_id": "TX_1792735694929",
+    "access_tier": "companion",
+    "is_upgrade": false,
+    "download_token": "61e16d733c8846fa06e83ca9ffe19f7d3085e64cc0984de741b1deebaa80e7bf",
+    "download_expires_at": "2026-10-26T06:08:16.003Z",
+    "download_count": 0,
+    "download_limit": 3,
+    "webhook_event_id": "TX_1792735694929",
+    "raw_metadata": {
+      "payhip_payload": {
+        "id": "TX_1792735694929",
+        "items": [
+          {
+            "product_id": "2804256",
+            "product_name": "Marketing Reclassified (Digital Companion Edition)",
+            "price": 4999,
+            "quantity": 1
+          }
+        ]
+      }
+    },
+    "orderId": "e2530799-4d9a-4580-8a50-d95181239f46",
+    "updatedAt": "2026-10-23T06:08:23.677Z"
+  },
+  "816ab768-06e6-4b99-ae9f-467a93d95c0f": {
+    "orderId": "816ab768-06e6-4b99-ae9f-467a93d95c0f",
+    "email": "online_owner_1792735703979@example.com",
+    "amount": 20,
+    "currency": "USD",
+    "book_name": "Marketing Reclassified — Online Reading Edition",
+    "access_tier": "online",
+    "status": "paid",
+    "payment_provider": "paypal",
+    "updatedAt": "2026-10-23T06:08:23.982Z"
+  },
+  "4ad01c61-8e24-4bb3-bcc8-6724b71a076c": {
+    "id": "4ad01c61-8e24-4bb3-bcc8-6724b71a076c",
+    "user_id": "9744ec07-1243-4825-a29c-46e18b37f347",
+    "email": "test_reader@example.com",
+    "customer_name": "Valued Reader",
+    "product_id": "04b84648-3609-4b31-9ded-2486bacf1e74",
+    "order_number": "ORD-PAYHIP-TX_1792735760718-5CE5",
+    "book_name": "Marketing Reclassified (Digital Companion Edition)",
+    "amount": 49.99,
+    "currency": "USD",
+    "status": "paid",
+    "payment_provider": "payhip",
+    "payhip_transaction_id": "TX_1792735760718",
+    "provider_transaction_id": "TX_1792735760718",
+    "access_tier": "companion",
+    "is_upgrade": false,
+    "download_token": "163f21c145353ceb60b5c489d8f08e6bbaff4047c6495e8786a2ac8aa9663856",
+    "download_expires_at": "2026-10-26T06:09:22.003Z",
+    "download_count": 0,
+    "download_limit": 3,
+    "webhook_event_id": "TX_1792735760718",
+    "raw_metadata": {
+      "payhip_payload": {
+        "id": "TX_1792735760718",
+        "items": [
+          {
+            "product_id": "2804256",
+            "product_name": "Marketing Reclassified (Digital Companion Edition)",
+            "price": 4999,
+            "quantity": 1
+          }
+        ]
+      }
+    },
+    "orderId": "4ad01c61-8e24-4bb3-bcc8-6724b71a076c",
+    "updatedAt": "2026-10-23T06:09:32.765Z"
+  },
+  "5b1f6c99-b2d7-4237-9cb2-cfe0a302254e": {
+    "id": "5b1f6c99-b2d7-4237-9cb2-cfe0a302254e",
+    "user_id": "1b05a58c-7a5a-4fd4-9562-6e4c8e4c9f42",
+    "email": "payhip_test_1792736002802@example.com",
+    "customer_name": "Valued Reader",
+    "product_id": "04b84648-3609-4b31-9ded-2486bacf1e74",
+    "order_number": "ORD-PAYHIP-TX_1792736002802-B586",
+    "book_name": "Marketing Reclassified (Digital Companion Edition)",
+    "amount": 49.99,
+    "currency": "USD",
+    "status": "paid",
+    "payment_provider": "payhip",
+    "payhip_transaction_id": "TX_1792736002802",
+    "provider_transaction_id": "TX_1792736002802",
+    "access_tier": "companion",
+    "is_upgrade": false,
+    "download_token": "3db5e00153534645039477cd8b6d769c24c0f1aea3337618b85df3784b1238db",
+    "download_expires_at": "2026-10-26T06:13:24.701Z",
+    "download_count": 0,
+    "download_limit": 3,
+    "webhook_event_id": "TX_1792736002802",
+    "raw_metadata": {
+      "payhip_payload": {
+        "id": "TX_1792736002802",
+        "items": [
+          {
+            "product_id": "2804256",
+            "product_name": "Marketing Reclassified (Digital Companion Edition)",
+            "price": 4999,
+            "quantity": 1
+          }
+        ]
+      }
+    },
+    "orderId": "5b1f6c99-b2d7-4237-9cb2-cfe0a302254e",
+    "updatedAt": "2026-10-23T06:13:28.332Z"
+  },
+  "19c3b90c-1bfe-43b3-a8b4-e03c8f2852fc": {
+    "orderId": "19c3b90c-1bfe-43b3-a8b4-e03c8f2852fc",
+    "email": "online_owner_1792736008623@example.com",
+    "amount": 20,
+    "currency": "USD",
+    "book_name": "Marketing Reclassified — Online Reading Edition",
+    "access_tier": "online",
+    "status": "paid",
+    "payment_provider": "paypal",
+    "updatedAt": "2026-10-23T06:13:28.654Z"
+  },
+  "cea19e2a-565f-4da2-b7fb-8060d4d136b7": {
+    "id": "cea19e2a-565f-4da2-b7fb-8060d4d136b7",
+    "user_id": "7dad8c12-7e99-48f7-84f1-e67fccb26ca0",
+    "email": "new_buyer_1792736081106@example.com",
+    "customer_name": "Valued Reader",
+    "product_id": "04b84648-3609-4b31-9ded-2486bacf1e74",
+    "order_number": "ORD-PAYHIP-test_tx_new_1792736081106-EB94",
+    "book_name": "Marketing Reclassified (Digital Companion Edition)",
+    "amount": 49.99,
+    "currency": "USD",
+    "status": "paid",
+    "payment_provider": "payhip",
+    "payhip_transaction_id": "test_tx_new_1792736081106",
+    "provider_transaction_id": "test_tx_new_1792736081106",
+    "access_tier": "companion",
+    "is_upgrade": false,
+    "download_token": "778195eb71ba078fdb06ad5607ebee9b27bb236f08f33bd36b4e0f46ba1b9375",
+    "download_expires_at": "2026-10-26T06:14:43.936Z",
+    "download_count": 0,
+    "download_limit": 3,
+    "webhook_event_id": "test_tx_new_1792736081106",
+    "raw_metadata": {
+      "payhip_payload": {
+        "id": "test_tx_new_1792736081106",
+        "items": [
+          {
+            "product_id": "2804256",
+            "product_name": "Marketing Reclassified (Digital Companion Edition)",
+            "price": 4999,
+            "quantity": 1
+          }
+        ]
+      }
+    },
+    "orderId": "cea19e2a-565f-4da2-b7fb-8060d4d136b7",
+    "updatedAt": "2026-10-23T06:14:45.272Z"
+  },
+  "ping": 1792736141536
+}

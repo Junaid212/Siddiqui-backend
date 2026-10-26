@@ -46,12 +46,12 @@ async function ensureCustomerAccount({ email, name, editionType }) {
       });
 
       if (!linkErr && linkData?.properties?.action_link) {
-        await sendSetPasswordEmail({
+        sendSetPasswordEmail({
           to: cleanEmail,
           customerName: name,
           setPasswordLink: linkData.properties.action_link,
           editionType,
-        });
+        }).catch(e => console.warn("[ensureCustomerAccount] Set password email notice:", e.message));
       }
     } catch (e) {
       console.warn("[ensureCustomerAccount] Failed to send set-password link:", e.message);
