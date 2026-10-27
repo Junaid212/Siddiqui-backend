@@ -13,7 +13,7 @@ const BOOK_METADATA = {
   title: "Marketing Reclassified: A Principle-First Approach",
   author: "M. Q. Siddiqui",
   slug: "marketing-reclassified-principle-first-approach",
-  publicationUrl: "/publications/marketing-reclassified-principle-first-approach",
+  publicationUrl: "/publications/marketing-reclassified",
   summary: "A definitive strategic playbook challenging transactional and promotional myopia; establishing marketing as a principle-first leadership discipline centered on authentic value creation, customer relevance, strategic alignment, and sustainable growth."
 };
 

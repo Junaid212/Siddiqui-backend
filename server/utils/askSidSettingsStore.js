@@ -17,7 +17,7 @@ const DEFAULT_SETTINGS = {
   fullAccessProductId: "04b84648-3609-4b31-9ded-2486bacf1e74",
   onlineEditionProductId: "prod_online_reading_001",
   upgradeCtaText: "Unlock Full Ask SID with the Digital Companion Edition ($49.99)",
-  upgradeUrl: "/publications/marketing-reclassified-principle-first-approach",
+  upgradeUrl: "/publications/marketing-reclassified",
   advisoryCtaEnabled: true,
   advisoryUrl: "/consultation",
   updatedAt: new Date().toISOString()

@@ -141,7 +141,7 @@ exports.getPublicConfig = async (req, res) => {
       publicDemoEnabled: settings.publicDemoEnabled !== false,
       demoQuestionLimit: Number(settings.demoQuestionLimit || 1),
       upgradeCtaText: settings.upgradeCtaText || "Unlock Full Ask SID with the Digital Companion Edition ($49.99)",
-      upgradeUrl: settings.upgradeUrl || "/publications/marketing-reclassified-principle-first-approach",
+      upgradeUrl: settings.upgradeUrl || "/publications/marketing-reclassified",
       advisoryCtaEnabled: settings.advisoryCtaEnabled !== false,
       advisoryUrl: settings.advisoryUrl || "/consultation"
     });
@@ -247,7 +247,7 @@ exports.askQuestion = async (req, res) => {
           return res.status(403).json({
             error: 'demo_limit_reached',
             message: "You've reached the current demo limit. Unlock Full Ask SID with the Digital Companion Edition.",
-            upgradeUrl: settings.upgradeUrl || "/publications/marketing-reclassified-principle-first-approach",
+            upgradeUrl: settings.upgradeUrl || "/publications/marketing-reclassified",
             upgradeCtaText: settings.upgradeCtaText
           });
         }
@@ -256,7 +256,7 @@ exports.askQuestion = async (req, res) => {
         return res.status(403).json({
           error: 'unauthorized',
           message: 'Full Ask SID access requires the Digital Companion Edition.',
-          upgradeUrl: settings.upgradeUrl || "/publications/marketing-reclassified-principle-first-approach",
+          upgradeUrl: settings.upgradeUrl || "/publications/marketing-reclassified",
           upgradeCtaText: settings.upgradeCtaText
         });
       }
