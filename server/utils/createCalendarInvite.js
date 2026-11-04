@@ -8,7 +8,7 @@ function generateICS(date, time, email) {
     title: "Consultation with Siddiqui Digital",
     description: "Your booked consultation meeting",
     start: [year, month, day, hour, minute],
-    duration: { hours: 1 },
+    duration: { minutes: 30 },
     organizer: {
       name: "Siddiqui Digital",
       email: process.env.SMTP_USER

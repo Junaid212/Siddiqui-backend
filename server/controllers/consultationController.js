@@ -1,17 +1,24 @@
 const supabase = require("../config/supabaseClient");
 const nodemailer = require("nodemailer");
 const generateICS = require("../utils/createCalendarInvite");
+const {
+  ALLOWED_SLOTS,
+  normalizeTime,
+  normalizeDate,
+  isActiveStatus,
+  escapeHtml,
+  validateBookingInput,
+  slotKey,
+} = require("../utils/consultationRules");
 
-/**
- * Lazily create the Nodemailer transporter so env vars are guaranteed
- * to be loaded before the transport is built.
- */
+const inflightSlots = new Set();
+
 function getTransporter() {
   const port = parseInt(process.env.SMTP_PORT, 10) || 465;
   return nodemailer.createTransport({
     host: process.env.SMTP_HOST,
     port: port,
-    secure: port === 465, // true for 465, false for other ports
+    secure: port === 465,
     auth: {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS,
@@ -22,16 +29,14 @@ function getTransporter() {
   });
 }
 
-/**
- * Send confirmation email to user with ICS calendar invite
- */
 const sendConfirmationEmail = async (email, date, time, name) => {
   const icsFile = await generateICS(date, time, email);
   const transporter = getTransporter();
+  const safeName = escapeHtml(name);
 
   await transporter.sendMail({
     from: process.env.SMTP_FROM,
-    replyTo: 'info@siddiqui.digital',
+    replyTo: "info@siddiqui.digital",
     to: email,
     subject: "Consultation Confirmation - Siddiqui Digital",
     html: `
@@ -40,16 +45,16 @@ const sendConfirmationEmail = async (email, date, time, name) => {
         <h2 style="color:#fff;margin:0;font-size:24px">✅ Consultation Confirmed</h2>
       </div>
       <div style="background:#fff;padding:30px;border:1px solid #eee;border-top:none;border-radius:0 0 12px 12px">
-        <p style="font-size:16px;color:#333">Hello <b>${name}</b>,</p>
+        <p style="font-size:16px;color:#333">Hello <b>${safeName}</b>,</p>
         <p style="color:#555">Your consultation has been successfully booked. Here are your details:</p>
         <table style="width:100%;border-collapse:collapse;margin:20px 0;background:#f9fafb;border-radius:8px;overflow:hidden">
           <tr style="border-bottom:1px solid #eee">
             <td style="padding:12px 16px;font-weight:bold;color:#333;width:100px">📅 Date</td>
-            <td style="padding:12px 16px;color:#555">${date}</td>
+            <td style="padding:12px 16px;color:#555">${escapeHtml(date)}</td>
           </tr>
           <tr>
             <td style="padding:12px 16px;font-weight:bold;color:#333">🕐 Time</td>
-            <td style="padding:12px 16px;color:#555">${time}</td>
+            <td style="padding:12px 16px;color:#555">${escapeHtml(time)}</td>
           </tr>
         </table>
         <p style="color:#555">You can add this meeting to your calendar using the attached <b>.ics</b> file.</p>
@@ -67,43 +72,40 @@ const sendConfirmationEmail = async (email, date, time, name) => {
   });
 };
 
-/**
- * Send notification email to admin about new booking
- */
 const sendAdminNotification = async (name, email, phone, date, time, message) => {
   const transporter = getTransporter();
 
   await transporter.sendMail({
     from: process.env.SMTP_FROM,
     to: process.env.ADMIN_EMAIL,
-    subject: `New Consultation Booked: ${name}`,
+    subject: `New Consultation Booked: ${String(name).replace(/[\r\n]/g, " ")}`,
     html: `
     <div style="font-family:Arial,sans-serif;padding:20px;max-width:600px;margin:0 auto">
       <h3 style="color:#ef4444">📋 New Consultation Booking</h3>
       <table style="width:100%;border-collapse:collapse;background:#f9fafb;border-radius:8px;overflow:hidden">
         <tr style="border-bottom:1px solid #eee">
           <td style="padding:10px 16px;font-weight:bold">Name</td>
-          <td style="padding:10px 16px">${name}</td>
+          <td style="padding:10px 16px">${escapeHtml(name)}</td>
         </tr>
         <tr style="border-bottom:1px solid #eee">
           <td style="padding:10px 16px;font-weight:bold">Email</td>
-          <td style="padding:10px 16px">${email}</td>
+          <td style="padding:10px 16px">${escapeHtml(email)}</td>
         </tr>
         <tr style="border-bottom:1px solid #eee">
           <td style="padding:10px 16px;font-weight:bold">Phone</td>
-          <td style="padding:10px 16px">${phone || 'N/A'}</td>
+          <td style="padding:10px 16px">${escapeHtml(phone || "N/A")}</td>
         </tr>
         <tr style="border-bottom:1px solid #eee">
           <td style="padding:10px 16px;font-weight:bold">Date</td>
-          <td style="padding:10px 16px">${date}</td>
+          <td style="padding:10px 16px">${escapeHtml(date)}</td>
         </tr>
         <tr style="border-bottom:1px solid #eee">
           <td style="padding:10px 16px;font-weight:bold">Time</td>
-          <td style="padding:10px 16px">${time}</td>
+          <td style="padding:10px 16px">${escapeHtml(time)}</td>
         </tr>
         <tr>
           <td style="padding:10px 16px;font-weight:bold">Message</td>
-          <td style="padding:10px 16px">${message || 'N/A'}</td>
+          <td style="padding:10px 16px">${escapeHtml(message || "N/A")}</td>
         </tr>
       </table>
     </div>
@@ -111,125 +113,165 @@ const sendAdminNotification = async (name, email, phone, date, time, message) =>
   });
 };
 
-// ─── Book a consultation ─────────────────────────────────────────────
+function collectBookedTimes(rows = []) {
+  const booked = new Set();
+  rows.forEach((row) => {
+    if (!isActiveStatus(row.status)) return;
+    const time = normalizeTime(row.time || row.selected_time);
+    if (time) booked.add(time);
+  });
+  return [...booked];
+}
+
+async function findActiveBookings(date, time) {
+  const normalizedDate = normalizeDate(date);
+  const normalizedTime = time ? normalizeTime(time) : null;
+
+  const { data, error } = await supabase
+    .from("consultations")
+    .select("id, date, time, selected_date, selected_time, status, created_at")
+    .or(`date.eq.${normalizedDate},selected_date.eq.${normalizedDate}`);
+
+  if (error) return { data: [], error };
+
+  const matches = (data || []).filter((row) => {
+    if (!isActiveStatus(row.status)) return false;
+    const rowDate = normalizeDate(row.date || row.selected_date);
+    if (rowDate !== normalizedDate) return false;
+    if (!normalizedTime) return true;
+    return normalizeTime(row.time || row.selected_time) === normalizedTime;
+  });
+
+  return { data: matches, error: null };
+}
+
+async function insertConsultation(payload) {
+  let hasEmailSentColumn = true;
+  let { data, error } = await supabase
+    .from("consultations")
+    .insert([payload])
+    .select()
+    .single();
+
+  if (error && (String(error.message || "").includes("email_sent") || error.code === "42703")) {
+    const fallbackPayload = { ...payload };
+    delete fallbackPayload.email_sent;
+    const fallback = await supabase.from("consultations").insert([fallbackPayload]).select().single();
+    data = fallback.data;
+    error = fallback.error;
+    hasEmailSentColumn = false;
+    console.warn('⚠️ "email_sent" column missing in Supabase! Proceeding without email tracking.');
+  }
+
+  return { data, error, hasEmailSentColumn };
+}
+
 exports.bookConsultation = async (req, res) => {
-  // Accept both naming conventions for backward compatibility
-  const {
-    userId,
-    name,
-    email,
-    phone,
-    date: dateField,
-    time: timeField,
-    selected_date,
-    selected_time,
-    message,
-  } = req.body;
-
-  const date = dateField || selected_date;
-  const time = timeField || selected_time;
-
-  if (!date || !time) {
-    return res.status(400).json({ error: "Date and time are required" });
+  const validated = validateBookingInput(req.body);
+  if (!validated.ok) {
+    return res.status(validated.status).json({ error: validated.error });
   }
 
-  if (!name || !email) {
-    return res.status(400).json({ error: "Name and email are required" });
+  const { name, email, phone, message, date, time, userId } = validated.value;
+  const lockKey = slotKey(date, time);
+
+  if (inflightSlots.has(lockKey)) {
+    return res.status(409).json({ error: "This time slot is already booked. Please choose another time." });
   }
+
+  inflightSlots.add(lockKey);
+  let userEmailSent = false;
+  let adminEmailSent = false;
 
   try {
-    // 1. Check if the time slot is already booked on that date
-    const { data: existing } = await supabase
-      .from("consultations")
-      .select("id")
-      .eq("date", date)
-      .eq("time", time)
-      .eq("status", "booked")
-      .single();
-
-    if (existing) {
-      return res
-        .status(409)
-        .json({ error: "This time slot is already booked. Please choose another time." });
+    const existing = await findActiveBookings(date, time);
+    if (existing.error) {
+      return res.status(400).json({ error: existing.error.message });
+    }
+    if (existing.data.length > 0) {
+      return res.status(409).json({ error: "This time slot is already booked. Please choose another time." });
     }
 
-    // 2. Insert booking into database
-    let payload = {
+    const payload = {
       user_id: userId || null,
       name,
       email,
       phone: phone || null,
       date,
       time,
+      selected_date: date,
+      selected_time: time,
       message: message || null,
       status: "booked",
+      consultant: "Muhammad.Q.Siddiqui",
       email_sent: false,
     };
 
-    let { data, error } = await supabase
-      .from("consultations")
-      .insert([payload])
-      .select()
-      .single();
+    let { data, error, hasEmailSentColumn } = await insertConsultation(payload);
 
-    let hasEmailSentColumn = true;
-
-    // Graceful fallback if email_sent column is missing
-    if (error && (error.message.includes('email_sent') || error.code === '42703')) {
-      delete payload.email_sent;
-      const fallback = await supabase.from("consultations").insert([payload]).select().single();
-      data = fallback.data;
-      error = fallback.error;
-      hasEmailSentColumn = false;
-      console.warn('⚠️ "email_sent" column missing in Supabase! Proceeding without email tracking.');
+    if (error && (String(error.message || "").includes("selected_date") || String(error.message || "").includes("selected_time") || String(error.message || "").includes("consultant"))) {
+      const reduced = { ...payload };
+      delete reduced.selected_date;
+      delete reduced.selected_time;
+      delete reduced.consultant;
+      const retry = await insertConsultation(reduced);
+      data = retry.data;
+      error = retry.error;
+      hasEmailSentColumn = retry.hasEmailSentColumn;
     }
 
-    if (error) return res.status(400).json({ error: error.message });
-
-    // 3. Send confirmation emails independently — a failure in one must NOT
-    //    prevent the other from being sent.
-    if (email) {
-      let userEmailSent = false;
-      let adminEmailSent = false;
-
-      // 3a. User confirmation email
-      try {
-        await sendConfirmationEmail(email, date, time, name);
-        userEmailSent = true;
-        console.log("📧 User confirmation email sent to:", email);
-      } catch (mailError) {
-        console.error("❌ Failed to send USER confirmation email:", mailError.message);
-        require('fs').appendFileSync(
-          'mail_error.log',
-          `${new Date().toISOString()} [USER] ${mailError.stack}\n`
-        );
+    if (error) {
+      if (error.code === "23505") {
+        return res.status(409).json({ error: "This time slot is already booked. Please choose another time." });
       }
-
-      // 3b. Admin notification email — runs regardless of user email outcome
-      try {
-        await sendAdminNotification(name, email, phone, date, time, message);
-        adminEmailSent = true;
-        console.log("📧 Admin notification email sent to:", process.env.ADMIN_EMAIL);
-      } catch (mailError) {
-        console.error("❌ Failed to send ADMIN notification email:", mailError.message);
-        require('fs').appendFileSync(
-          'mail_error.log',
-          `${new Date().toISOString()} [ADMIN] ${mailError.stack}\n`
-        );
-      }
-
-      // 4. Update email_sent = true only if at least the user email succeeded
-      if (userEmailSent && hasEmailSentColumn) {
-        await supabase
-          .from("consultations")
-          .update({ email_sent: true })
-          .eq("id", data.id);
-      }
-
-      console.log(`📊 Email summary for booking ${data.id}: user=${userEmailSent}, admin=${adminEmailSent}`);
+      return res.status(400).json({ error: error.message });
     }
 
-    res.json({
+    const conflicts = await findActiveBookings(date, time);
+    if (!conflicts.error && conflicts.data.length > 1) {
+      const extras = conflicts.data
+        .filter((row) => row.id === data.id)
+        .map((row) => row.id);
+      if (extras.length) {
+        await supabase.from("consultations").delete().eq("id", data.id);
+      }
+      return res.status(409).json({ error: "This time slot is already booked. Please choose another time." });
+    }
+
+    try {
+      await sendConfirmationEmail(email, date, time, name);
+      userEmailSent = true;
+      console.log("📧 User confirmation email sent to:", email);
+    } catch (mailError) {
+      console.error("❌ Failed to send USER confirmation email:", mailError.message);
+      require("fs").appendFileSync(
+        "mail_error.log",
+        `${new Date().toISOString()} [USER] ${mailError.stack}\n`
+      );
+    }
+
+    try {
+      await sendAdminNotification(name, email, phone, date, time, message);
+      adminEmailSent = true;
+      console.log("📧 Admin notification email sent to:", process.env.ADMIN_EMAIL);
+    } catch (mailError) {
+      console.error("❌ Failed to send ADMIN notification email:", mailError.message);
+      require("fs").appendFileSync(
+        "mail_error.log",
+        `${new Date().toISOString()} [ADMIN] ${mailError.stack}\n`
+      );
+    }
+
+    if (userEmailSent && hasEmailSentColumn) {
+      await supabase
+        .from("consultations")
+        .update({ email_sent: true })
+        .eq("id", data.id);
+    }
+
+    console.log(`📊 Email summary for booking ${data.id}: user=${userEmailSent}, admin=${adminEmailSent}`);
+
+    return res.json({
       success: true,
       message: "Consultation booked successfully!",
       consultation: data,
@@ -240,35 +282,25 @@ exports.bookConsultation = async (req, res) => {
     });
   } catch (error) {
     console.error("Booking error:", error);
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
+  } finally {
+    inflightSlots.delete(lockKey);
   }
 };
 
-// ─── Get available time slots for a date ─────────────────────────────
 exports.getAvailableSlots = async (req, res) => {
-  const { date } = req.query;
-
-  const allSlots = [
-    "09:00", "09:30", "10:00", "10:30", "11:00", "11:30",
-    "12:00", "12:30", "13:00", "13:30", "14:00", "14:30",
-    "15:00", "15:30", "16:00", "16:30", "17:00",
-  ];
+  const date = normalizeDate(req.query.date);
 
   if (!date) {
-    return res.json({ slots: allSlots });
+    return res.json({ slots: ALLOWED_SLOTS });
   }
 
   try {
-    const { data: bookedSlots, error } = await supabase
-      .from("consultations")
-      .select("time")
-      .eq("date", date)
-      .eq("status", "booked");
-
+    const { data, error } = await findActiveBookings(date);
     if (error) return res.status(400).json({ error: error.message });
 
-    const bookedTimes = bookedSlots.map((s) => s.time.substring(0, 5));
-    const availableSlots = allSlots.filter((slot) => !bookedTimes.includes(slot));
+    const bookedTimes = collectBookedTimes(data);
+    const availableSlots = ALLOWED_SLOTS.filter((slot) => !bookedTimes.includes(slot));
 
     res.json({ date, slots: availableSlots, bookedSlots: bookedTimes });
   } catch (error) {
@@ -276,7 +308,6 @@ exports.getAvailableSlots = async (req, res) => {
   }
 };
 
-// ─── Get all consultations (for admin panel) ─────────────────────────
 exports.getAllConsultations = async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -292,7 +323,6 @@ exports.getAllConsultations = async (req, res) => {
   }
 };
 
-// ─── Get consultations for a specific user ───────────────────────────
 exports.getConsultations = async (req, res) => {
   const { userId } = req.params;
 
@@ -301,7 +331,7 @@ exports.getConsultations = async (req, res) => {
       .from("consultations")
       .select("*")
       .eq("user_id", userId)
-      .order("date", { ascending: true });
+      .order("selected_date", { ascending: true });
 
     if (error) return res.status(400).json({ error: error.message });
 
@@ -311,7 +341,6 @@ exports.getConsultations = async (req, res) => {
   }
 };
 
-// ─── Get count of emails successfully sent ───────────────────────────
 exports.getEmailSentCount = async (req, res) => {
   try {
     const { count, error } = await supabase
@@ -327,7 +356,6 @@ exports.getEmailSentCount = async (req, res) => {
   }
 };
 
-// ─── Delete a consultation ───────────────────────────────────────────
 exports.deleteConsultation = async (req, res) => {
   try {
     const { error } = await supabase

@@ -11,7 +11,9 @@
 const fs = require("fs");
 const path = require("path");
 const supabase = require("../config/supabaseClient");
-require("dotenv").config();
+if (process.env.NODE_ENV !== "staging") {
+  require("dotenv").config();
+}
 
 // Candidate paths to shared admin coupons file
 const CANDIDATE_PATHS = [

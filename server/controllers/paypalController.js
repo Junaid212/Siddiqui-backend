@@ -14,7 +14,9 @@ const paypalClient = require("../utils/paypalClient");
 const { sendOrderConfirmationEmail } = require("../utils/orderEmail");
 const { ensureCustomerAccount } = require("../utils/customerAuth");
 const { saveOrderMetadata, getOrderMetadata, findOrderMetadataByToken } = require("../utils/orderStore");
-require("dotenv").config();
+if (process.env.NODE_ENV !== "staging") {
+  require("dotenv").config();
+}
 
 // Verified digital product catalog fallback
 const DEFAULT_PRODUCTS = [
@@ -97,6 +99,14 @@ exports.createPayPalOrder = async (req, res) => {
 
   if (!resolvedEmail) {
     return res.status(400).json({ error: "Customer email is required for secure digital delivery." });
+  }
+
+  const clientId = (process.env.PAYPAL_CLIENT_ID || "").trim();
+  const clientSecret = (process.env.PAYPAL_CLIENT_SECRET || "").trim();
+  if (!clientId || !clientSecret || clientId.includes("placeholder") || clientSecret.includes("placeholder")) {
+    return res.status(503).json({
+      error: "PayPal payment gateway is currently not configured or unavailable in this environment.",
+    });
   }
 
   try {
@@ -362,6 +372,14 @@ exports.capturePayPalOrder = async (req, res) => {
 
   if (!targetPayPalOrderId) {
     return res.status(400).json({ error: "PayPal order ID is required for capture." });
+  }
+
+  const clientId = (process.env.PAYPAL_CLIENT_ID || "").trim();
+  const clientSecret = (process.env.PAYPAL_CLIENT_SECRET || "").trim();
+  if (!clientId || !clientSecret || clientId.includes("placeholder") || clientSecret.includes("placeholder")) {
+    return res.status(503).json({
+      error: "PayPal payment gateway is currently not configured or unavailable in this environment.",
+    });
   }
 
   try {

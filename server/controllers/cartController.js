@@ -12,10 +12,23 @@ const supabase = require("../config/supabaseClient");
 const { sendOrderConfirmationEmail } = require("../utils/orderEmail");
 const { ensureCustomerAccount } = require("../utils/customerAuth");
 const { saveOrderMetadata, getOrderMetadata, getOrdersByEmail } = require("../utils/orderStore");
-require("dotenv").config();
+if (process.env.NODE_ENV !== "staging") {
+  require("dotenv").config();
+}
 
-const stripeSecretKey = process.env.STRIPE_SECRET_KEY || "";
-const stripe = new Stripe(stripeSecretKey);
+// Lazy Stripe client initialization: supports test credentials when provided, prevents crashes when missing
+function getStripeClient() {
+  const key = (process.env.STRIPE_SECRET_KEY || "").trim();
+  if (!key || key.includes("placeholder") || key.includes("your_stripe_secret")) {
+    return null;
+  }
+  try {
+    return new Stripe(key);
+  } catch (err) {
+    console.warn("[Stripe] Client initialization warning:", err.message);
+    return null;
+  }
+}
 
 /**
  * Helper to execute DB operations safely (skip unknown columns)
@@ -118,9 +131,10 @@ exports.createCartCheckout = async (req, res) => {
   }
 
   // Stripe key check
-  if (!stripeSecretKey || stripeSecretKey.includes("placeholder") || stripeSecretKey.includes("your")) {
-    return res.status(500).json({
-      error: "Payment gateway is not configured. Please contact support at info@siddiqui.digital.",
+  const stripe = getStripeClient();
+  if (!stripe) {
+    return res.status(503).json({
+      error: "Stripe payment gateway is currently not configured or unavailable in this environment.",
     });
   }
 

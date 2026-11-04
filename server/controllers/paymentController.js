@@ -5,10 +5,23 @@ const { sendOrderConfirmationEmail } = require("../utils/orderEmail");
 const { ensureCustomerAccount } = require("../utils/customerAuth");
 const { getProductFile, setProductFile } = require("../utils/productFileStore");
 const { saveOrderMetadata, getOrderMetadata, findOrderMetadataByToken } = require("../utils/orderStore");
-require("dotenv").config();
+if (process.env.NODE_ENV !== "staging") {
+  require("dotenv").config();
+}
 
-const stripeSecretKey = process.env.STRIPE_SECRET_KEY || "";
-const stripe = new Stripe(stripeSecretKey);
+// Lazy Stripe client initialization: supports test credentials when provided, prevents crashes when missing
+function getStripeClient() {
+  const key = (process.env.STRIPE_SECRET_KEY || "").trim();
+  if (!key || key.includes("placeholder") || key.includes("your_stripe_secret")) {
+    return null;
+  }
+  try {
+    return new Stripe(key);
+  } catch (err) {
+    console.warn("[Stripe] Client initialization warning:", err.message);
+    return null;
+  }
+}
 
 // Verified digital product catalog fallback (real products only)
 const DEFAULT_PRODUCTS = [
@@ -424,10 +437,11 @@ exports.createCheckoutSession = async (req, res) => {
     const clientUrl = process.env.CLIENT_URL || "https://siddiqui.digital";
 
     // 3. Validate server-side Stripe secret key
-    if (!stripeSecretKey || stripeSecretKey.includes("placeholder") || stripeSecretKey.includes("your")) {
-      console.error("[createCheckoutSession] Stripe secret key is not properly configured on server.");
-      return res.status(500).json({
-        error: "Stripe payment gateway is currently not configured. Please contact support at info@siddiqui.digital."
+    const stripeClient = getStripeClient();
+    if (!stripeClient) {
+      console.warn("[createCheckoutSession] Stripe payment gateway is not configured in this environment.");
+      return res.status(503).json({
+        error: "Stripe payment gateway is currently not configured or unavailable in this environment."
       });
     }
 
@@ -472,7 +486,7 @@ exports.createCheckoutSession = async (req, res) => {
 
     let session;
     try {
-      session = await stripe.checkout.sessions.create(sessionConfig);
+      session = await stripeClient.checkout.sessions.create(sessionConfig);
     } catch (stripeErr) {
       console.error("[createCheckoutSession] Stripe API call failed:", stripeErr.message);
       return res.status(500).json({
@@ -534,14 +548,20 @@ exports.stripeWebhook = async (req, res) => {
   const sig = req.headers["stripe-signature"];
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
-  if (!sig || !webhookSecret) {
-    console.error("[stripeWebhook] Missing stripe signature or STRIPE_WEBHOOK_SECRET");
+  const stripeClient = getStripeClient();
+  if (!stripeClient || !webhookSecret || webhookSecret.includes("placeholder") || webhookSecret.includes("your")) {
+    console.warn("[stripeWebhook] Stripe gateway or STRIPE_WEBHOOK_SECRET is not configured.");
+    return res.status(503).send("Webhook Error: Stripe payment gateway is not configured in this environment.");
+  }
+
+  if (!sig) {
+    console.error("[stripeWebhook] Missing stripe signature header");
     return res.status(400).send("Webhook Error: Signature or secret missing");
   }
 
   let event;
   try {
-    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+    event = stripeClient.webhooks.constructEvent(req.body, sig, webhookSecret);
   } catch (err) {
     console.error(`[stripeWebhook] Signature verification failed: ${err.message}`);
     return res.status(400).send(`Webhook Error: ${err.message}`);

@@ -1,6 +1,13 @@
 const express = require("express");
 const cors = require("cors");
-require("dotenv").config();
+// Environment loading: in staging mode, disallow loading root or server production .env files
+if (process.env.NODE_ENV !== "staging") {
+  require("dotenv").config();
+} else {
+  // Disallow subsequent require("dotenv").config() calls in controllers/utils from loading production .env
+  const dotenv = require("dotenv");
+  dotenv.config = () => ({ parsed: {} });
+}
 
 const authRoutes = require("./routes/authRoutes");
 const consultationRoutes = require("./routes/consultationRoutes");

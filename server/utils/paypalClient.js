@@ -10,7 +10,9 @@
  */
 
 const crypto = require("crypto");
-require("dotenv").config();
+if (process.env.NODE_ENV !== "staging") {
+  require("dotenv").config();
+}
 
 let cachedToken = null;
 let tokenExpiresAt = 0;

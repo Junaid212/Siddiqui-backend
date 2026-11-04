@@ -12,7 +12,9 @@
 
 const crypto = require("crypto");
 try {
-  require("dotenv").config();
+  if (process.env.NODE_ENV !== "staging") {
+    require("dotenv").config();
+  }
 } catch {}
 
 // Environment-adaptive imports supporting Express and Vercel serverless layouts
@@ -152,6 +154,14 @@ async function sendPartialRefundAdminNotification({
  * Official Payhip Webhook Endpoint (paid and refunded)
  */
 exports.payhipWebhook = async (req, res) => {
+  const payhipKey = (process.env.PAYHIP_API_KEY || "").trim();
+  if (!payhipKey || payhipKey.includes("placeholder")) {
+    console.warn("[payhipWebhook] PAYHIP_API_KEY is not configured.");
+    return res.status(503).json({
+      error: "Payhip webhook service is currently not configured or unavailable in this environment.",
+    });
+  }
+
   const payload = req.body;
 
   if (!payload || typeof payload !== "object") {

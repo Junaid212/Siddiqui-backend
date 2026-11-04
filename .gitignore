@@ -21,3 +21,4 @@ Thumbs.db
 # Misc
 recent_bookings.json
 recent_bookings.txt
+.env.staging

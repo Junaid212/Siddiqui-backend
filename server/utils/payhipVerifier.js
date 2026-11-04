@@ -10,7 +10,9 @@
 
 const crypto = require("crypto");
 try {
-  require("dotenv").config();
+  if (process.env.NODE_ENV !== "staging") {
+    require("dotenv").config();
+  }
 } catch {}
 
 // Primary book IDs in the system
