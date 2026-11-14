@@ -3,7 +3,7 @@
  *
  * Endpoints:
  *   POST /api/payment/create-cart-checkout — Create Stripe session for multiple items
- *   GET  /api/payment/my-orders?email=...  — Customer order history
+ *   GET  /api/payment/my-orders            — The signed-in customer's own order history (login required)
  */
 
 const Stripe = require("stripe");
@@ -11,6 +11,7 @@ const crypto = require("crypto");
 const supabase = require("../config/supabaseClient");
 const { sendOrderConfirmationEmail } = require("../utils/orderEmail");
 const { ensureCustomerAccount } = require("../utils/customerAuth");
+const { escapeLike } = require("../utils/requireCustomer");
 const { saveOrderMetadata, getOrderMetadata, getOrdersByEmail } = require("../utils/orderStore");
 if (process.env.NODE_ENV !== "staging") {
   require("dotenv").config();
@@ -70,7 +71,7 @@ exports.createCartCheckout = async (req, res) => {
     lineItems = [],
     discountCode,
     discountAmount = 0,
-    currency = "AED",
+    currency = "USD",
     marketingOptIn = false,
   } = req.body;
 
@@ -266,28 +267,28 @@ exports.createCartCheckout = async (req, res) => {
  * Returns all paid orders for a customer email.
  */
 exports.getCustomerOrders = async (req, res) => {
-  const email = (req.query.email || "").trim();
-
-  if (!email) {
-    return res.status(400).json({ error: "Email address is required." });
+  // requireCustomer has verified the Supabase session. The customer is identified by that session ONLY:
+  // any ?email= in the URL is ignored, so no one can list another customer's orders (or their download tokens).
+  const user = req.authUser;
+  if (!user || !user.email) {
+    return res.status(401).json({ error: "Please sign in to view your orders." });
   }
-
-  const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailRe.test(email)) {
-    return res.status(400).json({ error: "Invalid email address." });
-  }
+  const email = String(user.email).trim().toLowerCase();
 
   try {
-    const { data: orders, error } = await supabase
-      .from("orders")
-      .select("*")
-      .ilike("email", email)
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      console.error("[getCustomerOrders] Supabase error:", error.message);
+    const [byUser, byEmail] = await Promise.all([
+      supabase.from("orders").select("*").eq("user_id", user.id),
+      supabase.from("orders").select("*").ilike("email", escapeLike(email)),
+    ]);
+    const queryError = byUser.error || byEmail.error;
+    if (queryError) {
+      console.error("[getCustomerOrders] Supabase error:", queryError.message);
       return res.status(500).json({ error: "Failed to retrieve order history." });
     }
+    const seen = new Set();
+    const orders = [...(byUser.data || []), ...(byEmail.data || [])]
+      .filter((o) => (seen.has(o.id) ? false : (seen.add(o.id), true)))
+      .sort((x, y) => String(y.created_at || "").localeCompare(String(x.created_at || "")));
 
     const enriched = (orders || []).map((order) => {
       const meta = getOrderMetadata(order.id) || {};
@@ -297,15 +298,13 @@ exports.getCustomerOrders = async (req, res) => {
         book_name: order.book_name || meta.productName || "Digital Publication",
         product_id: order.product_id || meta.product_id || null,
         amount: Number(order.amount) || 0,
-        currency: order.currency || "AED",
+        currency: order.currency || "USD",
         status: order.status || "pending",
         email: order.email || email,
         payment_provider: order.payment_provider || meta.payment_provider || (order.stripe_session_id ? "stripe" : order.paypal_order_id ? "paypal" : "payhip"),
         access_tier: order.access_tier || meta.access_tier || (Number(order.amount) < 30 ? "online" : "companion"),
-        paypal_order_id: order.paypal_order_id || meta.paypal_order_id || null,
-        payhip_transaction_id: order.payhip_transaction_id || meta.payhip_transaction_id || null,
-        stripe_session_id: order.stripe_session_id || null,
-        download_token: order.download_token || order.stripe_session_id || order.id,
+        // No download token and no provider ids here: a list response must not carry reusable credentials.
+        // The page asks POST /orders/:id/access-link for a short-lived link when the customer clicks.
         download_count: Number(order.download_count) || 0,
         download_limit: Number(order.download_limit) || 3,
         download_expires_at: order.download_expires_at || null,
@@ -330,27 +329,33 @@ exports.getCustomerOrders = async (req, res) => {
  * - Owns same edition: block purchase with "You already own this edition"
  */
 exports.checkOwnership = async (req, res) => {
-  const email = (req.query.email || "").trim().toLowerCase();
-
-  if (!email) {
-    return res.status(400).json({ error: "Email address is required." });
+  // Identity comes from the verified session (requireCustomer); ?email= is ignored. This endpoint used to
+  // answer for ANY e-mail address and return the matching order rows, download tokens included.
+  const user = req.authUser;
+  if (!user || !user.email) {
+    return res.status(401).json({ error: "Please sign in to check your purchases." });
   }
+  const email = String(user.email).trim().toLowerCase();
 
   try {
-    const { data: orders, error } = await supabase
-      .from("orders")
-      .select("*")
-      .ilike("email", email)
-      .in("status", ["paid", "successful"])
-      .order("created_at", { ascending: false });
-
+    const paidOnly = ["paid", "successful"];
+    const [byUser, byEmail] = await Promise.all([
+      supabase.from("orders").select("*").eq("user_id", user.id).in("status", paidOnly),
+      supabase.from("orders").select("*").ilike("email", escapeLike(email)).in("status", paidOnly),
+    ]);
+    const error = byUser.error || byEmail.error;
     if (error) {
       console.warn("[checkOwnership] Supabase query notice:", error.message);
     }
+    const seen = new Set();
+    const orders = [...(byUser.data || []), ...(byEmail.data || [])]
+      .filter((o) => (seen.has(o.id) ? false : (seen.add(o.id), true)))
+      .filter((o) => !["refunded", "full"].includes(String(o.refund_status || "").toLowerCase()));
 
-    // Merge in orders from metadata store for full resilience
-    const metaOrders = typeof getOrdersByEmail === "function" ? getOrdersByEmail(email) : [];
-    const combinedOrders = [...(orders || []), ...metaOrders];
+    // Merge in orders from metadata store for full resilience (a refunded order never counts as owned)
+    const metaOrders = (typeof getOrdersByEmail === "function" ? getOrdersByEmail(email) : [])
+      .filter((o) => o.status !== "refunded" && o.refund_status !== "refunded");
+    const combinedOrders = [...orders, ...metaOrders];
 
     let ownsOnline = false;
     let ownsCompanion = false;
@@ -383,7 +388,6 @@ exports.checkOwnership = async (req, res) => {
       ownsCompanion,
       canUpgrade: ownsOnline && !ownsCompanion,
       upgradeDifference: 29.99,
-      orders: orders || [],
     });
   } catch (err) {
     console.error("[checkOwnership] Error:", err);

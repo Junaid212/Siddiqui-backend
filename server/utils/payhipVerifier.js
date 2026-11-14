@@ -20,6 +20,17 @@ const DEFAULT_BOOK_ID = "04b84648-3609-4b31-9ded-2486bacf1e74"; // Marketing Rec
 const ADAPTIVE_VALUE_BOOK_ID = "b4492051-cce5-4213-974b-72c74da19196";
 const VALUE_DRIFT_BOOK_ID = "ba9acc66-a824-47c4-a4aa-5abb1a153437";
 
+// How a Payhip "paid" / "refunded" webhook names a product (Payhip help article 115, "webhooks"): every element of items[]
+// carries product_id (a numeric id), product_name, product_key (the short code at the end of the product URL, e.g. "RGsF"
+// for https://payhip.com/b/RGsF), product_permalink (that URL), quantity, and flags such as used_upgrade_discount.
+// The products on this site are configured by that short key: Online Reading Nr3Tp, Digital Companion 2H0Wr, Upgrade IpN7k
+// (admin dashboard + catalogue), so matching product_key / product_permalink is the reliable, documented rule.
+// WARNING: the numeric product_id "2804256" in the repository's simulation scripts and stored test orders is the example
+// value from Payhip's documentation ("The Adventures of Sherlock Holmes"), NOT one of our products. Never allow-list it.
+// The numeric ids of our own products are not known and are not needed; if one ever must be matched, list it in
+// PAYHIP_ONLINE_PRODUCT_ID / PAYHIP_COMPANION_PRODUCT_ID / PAYHIP_UPGRADE_PRODUCT_ID (comma-separated lists are accepted).
+const idList = (value) => String(value || "").split(",").map((s) => s.trim()).filter(Boolean);
+
 /**
  * Verify Payhip webhook payload authenticity
  * @param {Object} payload - Parsed JSON body received from Payhip
@@ -56,23 +67,31 @@ function verifyPayhipSignature(payload, headers = {}) {
 }
 
 /**
- * Synchronous mapper: Checks environment overrides and fallback heuristics
+ * Synchronous mapper. DEFAULT-DENY: a product is recognised only when it is explicitly known, and any
+ * other product returns null so the webhook can reject it. It used to fall back to guessing from the
+ * product NAME and PRICE and, finally, to "Digital Companion Edition" - so any other product sold on the
+ * same Payhip account (or a mispriced one) silently granted downloads and the reader.
+ *
+ * Recognised: PAYHIP_MAPPING_JSON entries, the three Marketing Reclassified editions (Payhip keys
+ * Nr3Tp / 2H0Wr / IpN7k or the PAYHIP_*_PRODUCT_ID overrides) and the two framework books by explicit
+ * id / key / title.
  */
 function mapPayhipProductToBook(item = {}, fullPayload = {}) {
-  // Check for custom JSON mapping in environment variable
+  // Check for custom JSON mapping in environment variable (an entry must state its tier explicitly)
   if (process.env.PAYHIP_MAPPING_JSON) {
     try {
       const customMap = JSON.parse(process.env.PAYHIP_MAPPING_JSON);
       const key = item.product_id || item.product_key || fullPayload.product_id;
-      if (key && customMap[key]) {
+      const entry = key && Object.prototype.hasOwnProperty.call(customMap, key) ? customMap[key] : null;
+      if (entry && (entry.accessTier === "online" || entry.accessTier === "companion")) {
         return {
-          productId: customMap[key].productId || DEFAULT_BOOK_ID,
-          accessTier: customMap[key].accessTier || "companion",
-          editionType: customMap[key].accessTier || "companion",
-          title: customMap[key].title || item.product_name || "Digital Publication",
-          isUpgrade: Boolean(customMap[key].isUpgrade),
-          canReadOnline: customMap[key].canReadOnline !== false,
-          canDownload: customMap[key].accessTier !== "online",
+          productId: entry.productId || DEFAULT_BOOK_ID,
+          accessTier: entry.accessTier,
+          editionType: entry.accessTier,
+          title: entry.title || item.product_name || "Digital Publication",
+          isUpgrade: Boolean(entry.isUpgrade),
+          canReadOnline: entry.canReadOnline !== false,
+          canDownload: entry.accessTier !== "online",
         };
       }
     } catch (e) {
@@ -82,11 +101,10 @@ function mapPayhipProductToBook(item = {}, fullPayload = {}) {
 
   const prodId = String(item.product_id || fullPayload.product_id || "").trim();
   const prodKey = String(item.product_key || fullPayload.product_key || "").trim();
-  const link = String(item.product_link || fullPayload.product_link || fullPayload.product_url || fullPayload.link || "").trim();
+  const link = String(item.product_permalink || item.product_link || fullPayload.product_link || fullPayload.product_url || fullPayload.link || "").trim();
   const linkKeyMatch = link.match(/\/b\/([a-zA-Z0-9]+)/i);
   const linkKey = linkKeyMatch ? linkKeyMatch[1] : "";
   const name = String(item.product_name || fullPayload.product_name || "").toLowerCase();
-  const priceCents = Number(item.price || fullPayload.price || 0);
 
   const matchKey = (target) => {
     if (!target) return false;
@@ -94,13 +112,13 @@ function mapPayhipProductToBook(item = {}, fullPayload = {}) {
     return clean === prodId || clean === prodKey || (linkKey && clean === linkKey);
   };
 
-  // Check specific environment overrides for product IDs
-  const envOnlineId = String(process.env.PAYHIP_ONLINE_PRODUCT_ID || "").trim();
-  const envCompanionId = String(process.env.PAYHIP_COMPANION_PRODUCT_ID || "").trim();
-  const envUpgradeId = String(process.env.PAYHIP_UPGRADE_PRODUCT_ID || "").trim();
+  // Specific environment overrides for product IDs
+  const envOnlineIds = idList(process.env.PAYHIP_ONLINE_PRODUCT_ID);
+  const envCompanionIds = idList(process.env.PAYHIP_COMPANION_PRODUCT_ID);
+  const envUpgradeIds = idList(process.env.PAYHIP_UPGRADE_PRODUCT_ID);
 
-  // 1. Direct shortcode / configured match for Online Reading Edition ($20.00 / Nr3Tp)
-  if (matchKey("Nr3Tp") || (envOnlineId && matchKey(envOnlineId))) {
+  // 1. Online Reading Edition ($20.00 / Nr3Tp)
+  if (matchKey("Nr3Tp") || envOnlineIds.some(matchKey)) {
     return {
       productId: DEFAULT_BOOK_ID,
       accessTier: "online",
@@ -112,21 +130,23 @@ function mapPayhipProductToBook(item = {}, fullPayload = {}) {
     };
   }
 
-  // 2. Direct shortcode / configured match for Digital Companion Edition ($49.99 / 2H0Wr)
-  if (matchKey("2H0Wr") || (envCompanionId && matchKey(envCompanionId))) {
+  // 2. Digital Companion Edition ($49.99 / 2H0Wr)
+  if (matchKey("2H0Wr") || envCompanionIds.some(matchKey)) {
+    // Payhip's own "upgrade discount" feature flags a purchase made at the upgrade price
+    const usedUpgradeDiscount = item.used_upgrade_discount === true;
     return {
       productId: DEFAULT_BOOK_ID,
       accessTier: "companion",
       editionType: "companion",
-      title: "Marketing Reclassified — Digital Companion Edition",
-      isUpgrade: false,
+      title: usedUpgradeDiscount ? "Marketing Reclassified — Digital Companion Edition (Upgrade)" : "Marketing Reclassified — Digital Companion Edition",
+      isUpgrade: usedUpgradeDiscount,
       canReadOnline: true,
       canDownload: true,
     };
   }
 
-  // 3. Direct shortcode / configured match for Upgrade Edition ($29.99 / IpN7k)
-  if (matchKey("IpN7k") || (envUpgradeId && matchKey(envUpgradeId))) {
+  // 3. Upgrade Edition ($29.99 / IpN7k)
+  if (matchKey("IpN7k") || envUpgradeIds.some(matchKey)) {
     return {
       productId: DEFAULT_BOOK_ID,
       accessTier: "companion",
@@ -138,7 +158,7 @@ function mapPayhipProductToBook(item = {}, fullPayload = {}) {
     };
   }
 
-  // 1. Adaptive Value Framework
+  // 4. Adaptive Value Framework (existing catalogue item, matched exactly as before)
   if (name.includes("adaptive value") || prodId === ADAPTIVE_VALUE_BOOK_ID || prodKey === "avf") {
     return {
       productId: ADAPTIVE_VALUE_BOOK_ID,
@@ -151,7 +171,7 @@ function mapPayhipProductToBook(item = {}, fullPayload = {}) {
     };
   }
 
-  // 2. Value Drift Index
+  // 5. Value Drift Index (existing catalogue item, matched exactly as before)
   if (name.includes("value drift") || prodId === VALUE_DRIFT_BOOK_ID || prodKey === "vdi") {
     return {
       productId: VALUE_DRIFT_BOOK_ID,
@@ -164,51 +184,8 @@ function mapPayhipProductToBook(item = {}, fullPayload = {}) {
     };
   }
 
-  // 3. Marketing Reclassified Editions
-  // Online Reading Edition ($20.00 / 2000 cents)
-  if (
-    name.includes("online") ||
-    item.access_type === "online" ||
-    (priceCents >= 1800 && priceCents <= 2500 && !name.includes("companion"))
-  ) {
-    return {
-      productId: DEFAULT_BOOK_ID,
-      accessTier: "online",
-      editionType: "online",
-      title: "Marketing Reclassified — Online Reading Edition",
-      isUpgrade: false,
-      canReadOnline: true,
-      canDownload: false,
-    };
-  }
-
-  // Upgrade to Digital Companion Edition ($29.99 / ~2999 cents)
-  if (
-    name.includes("upgrade") ||
-    item.used_upgrade_discount ||
-    (priceCents >= 2700 && priceCents <= 3200 && name.includes("companion"))
-  ) {
-    return {
-      productId: DEFAULT_BOOK_ID,
-      accessTier: "companion",
-      editionType: "companion",
-      title: "Marketing Reclassified — Digital Companion Edition (Upgrade)",
-      isUpgrade: true,
-      canReadOnline: true,
-      canDownload: true,
-    };
-  }
-
-  // Default to Digital Companion Edition (Full download & online reader)
-  return {
-    productId: DEFAULT_BOOK_ID,
-    accessTier: "companion",
-    editionType: "companion",
-    title: item.product_name || "Marketing Reclassified — Digital Companion Edition",
-    isUpgrade: false,
-    canReadOnline: true,
-    canDownload: true,
-  };
+  // Anything else is NOT a product this site sells: no access is granted (the webhook rejects it).
+  return null;
 }
 
 /**
@@ -217,7 +194,7 @@ function mapPayhipProductToBook(item = {}, fullPayload = {}) {
 async function resolvePayhipProductMapping(item = {}, fullPayload = {}) {
   const prodId = String(item.product_id || fullPayload.product_id || "").trim();
   const prodKey = String(item.product_key || fullPayload.product_key || "").trim();
-  const link = String(item.product_link || fullPayload.product_link || fullPayload.product_url || fullPayload.link || "").trim();
+  const link = String(item.product_permalink || item.product_link || fullPayload.product_link || fullPayload.product_url || fullPayload.link || "").trim();
   const linkKeyMatch = link.match(/\/b\/([a-zA-Z0-9]+)/i);
   const linkKey = linkKeyMatch ? linkKeyMatch[1] : "";
 
@@ -290,7 +267,7 @@ async function resolvePayhipProductMapping(item = {}, fullPayload = {}) {
     }
   }
 
-  // Fallback to sync mapper
+  // Fallback to the strict sync mapper (null = unknown product)
   return mapPayhipProductToBook(item, fullPayload);
 }
 

@@ -154,7 +154,7 @@ exports.validateDiscount = async (req, res) => {
     if (discount.min_order_amount && subtotal > 0 && subtotal < Number(discount.min_order_amount)) {
       return res.status(400).json({
         valid: false,
-        error: `Coupon code '${code}' requires a minimum order of AED ${discount.min_order_amount}.`,
+        error: `Coupon code '${code}' requires a minimum order of USD ${discount.min_order_amount}.`,
       });
     }
 

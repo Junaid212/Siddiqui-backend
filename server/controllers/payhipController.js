@@ -39,6 +39,13 @@ try {
 } catch {}
 const { sendOrderConfirmationEmail, sendEmail } = orderEmailUtils;
 
+// Entitlements (Online Reading / Digital Companion / Ask SID allowance) are derived from the paid or refunded order.
+// Optional so the Vercel-style copy of this controller (api/_lib) keeps working without the server-only module.
+let entitlements = null;
+try { entitlements = require("../utils/entitlements"); } catch { /* not available in this layout */ }
+const syncEntitlement = async (order) => { if (entitlements) { try { return await entitlements.syncOrderEntitlement(order); } catch (e) { console.error("[payhipWebhook] entitlement sync:", e.message); } } return null; };
+const recordWebhook = (event) => { if (entitlements && entitlements.recordWebhookEvent) entitlements.recordWebhookEvent(event).catch(() => {}); };
+
 let customerAuthUtils = {};
 try {
   customerAuthUtils = require("../utils/customerAuth");
@@ -52,9 +59,32 @@ try {
   orderStoreUtils = require("./orderStore");
 }
 const { saveOrderMetadata, getOrderMetadata, findOrderMetadataByToken } = orderStoreUtils;
+const { withFileLock } = require("../utils/fileLock");
 
 // In-memory store for pending account claim verification codes (15-minute TTL)
 const pendingClaims = new Map();
+
+// Serialises processing of events that share a transaction id. Payhip can deliver the same event twice, at the same
+// moment; the second delivery waits for the first and then sees the rows it wrote, instead of both passing a
+// "does it exist yet?" check and inserting a duplicate.
+//   - in this process: a promise queue per transaction id;
+//   - across processes on this server (PM2 cluster, overlapping restarts): an atomic directory lock (utils/fileLock.js).
+// Several SERVERS sharing one database would still need the unique index documented in docs/STAGE0-SECURITY.md.
+const transactionLocks = new Map();
+async function withTransactionLock(key, fn) {
+  const previous = transactionLocks.get(key) || Promise.resolve();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const tail = previous.then(() => gate);
+  transactionLocks.set(key, tail);
+  await previous;
+  try {
+    return await withFileLock(`payhip:${key}`, fn);
+  } finally {
+    release();
+    if (transactionLocks.get(key) === tail) transactionLocks.delete(key);
+  }
+}
 
 // Helper to execute DB operations safely against schema cache limitations
 async function executeWithSchemaFallback(operationFn, payload) {
@@ -149,6 +179,38 @@ async function sendPartialRefundAdminNotification({
   }
 }
 
+// A rejected product is either something this site does not sell or a REAL purchase whose id is not configured yet.
+// The second case means a customer paid and received nothing, so the owner is told straight away (once per product
+// per 6 hours). The alert holds no customer data: only the transaction id (to find it in Payhip), product id, name, price.
+const unsupportedAlertedAt = new Map();
+async function notifyUnsupportedProduct({ transactionId, item, payload }) {
+  try {
+    const productId = String(item.product_id || payload.product_id || "-");
+    const signature = `${productId}|${String(item.product_key || "-")}`;
+    const last = unsupportedAlertedAt.get(signature) || 0;
+    if (Date.now() - last < 6 * 3600 * 1000) return;
+    unsupportedAlertedAt.set(signature, Date.now());
+    const nodemailer = require("nodemailer");
+    const port = parseInt(process.env.SMTP_PORT, 10) || 465;
+    const transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST, port, secure: port === 465,
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }, connectionTimeout: 10000,
+    });
+    const esc = (s) => String(s).replace(/[<>&"]/g, (ch) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[ch]));
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM || '"Siddiqui.Digital Alerts" <info@siddiqui.digital>',
+      to: process.env.ADMIN_EMAIL || process.env.SMTP_USER || "info@siddiqui.digital",
+      subject: `[ACTION REQUIRED] Payhip purchase NOT recognised: product ${productId}`,
+      html: `<p>A Payhip payment was received but the product is not configured on the website, so <strong>no access was granted</strong> and nothing was stored.</p>` +
+        `<ul><li>Transaction: ${esc(transactionId)}</li><li>Product id: ${esc(productId)}</li><li>Product name: ${esc(item.product_name || "-")}</li><li>Price (cents): ${esc(item.price || "-")}</li></ul>` +
+        `<p>If this is a product you sell, add its id to PAYHIP_COMPANION_PRODUCT_ID / PAYHIP_ONLINE_PRODUCT_ID / PAYHIP_UPGRADE_PRODUCT_ID and ask Payhip to re-send the event; nothing was recorded, so it is safe to re-deliver.</p>`,
+    });
+    console.log(`[payhipWebhook] Unsupported-product alert sent for product ${productId}`);
+  } catch (err) {
+    console.warn("[payhipWebhook] Could not send the unsupported-product alert:", err.message);
+  }
+}
+
 /**
  * POST /api/webhooks/payhip
  * Official Payhip Webhook Endpoint (paid and refunded)
@@ -181,6 +243,19 @@ exports.payhipWebhook = async (req, res) => {
 
   console.log(`[payhipWebhook] Verified Payhip event: '${eventType}' (Transaction: ${transactionId})`);
 
+  // Delivery log for the admin dashboard (identifiers only, no personal data): every answer we give is recorded once.
+  {
+    const origJson = res.json.bind(res);
+    res.json = (body) => {
+      const code = res.statusCode || 200;
+      const outcome = code >= 500 ? "failed" : code >= 400 ? "rejected"
+        : body && (body.idempotent || body.ignored) ? "duplicate" : body && body.unhandled ? "ignored" : "processed";
+      recordWebhook({ provider: "payhip", eventType: String(eventType || "unknown"), transactionId, outcome, httpStatus: code, detail: { keys: body && typeof body === "object" ? Object.keys(body).slice(0, 8) : [] } });
+      return origJson(body);
+    };
+  }
+
+  return withTransactionLock(transactionId || "no-transaction-id", async () => {
   try {
     // 2. Handle 'paid' event
     if (eventType === "paid") {
@@ -205,13 +280,6 @@ exports.payhipWebhook = async (req, res) => {
         return res.json({ received: true, ignored: "already_refunded" });
       }
 
-      // Requirement 3: Idempotency check: see if an order is already paid/successful
-      const isAlreadyPaid = allExisting.some(o => o.status === "paid" || o.status === "successful");
-      if (isAlreadyPaid) {
-        console.log(`[payhipWebhook] Transaction ${transactionId} already processed. Skipping duplicate.`);
-        return res.json({ received: true, idempotent: true });
-      }
-
       const items = Array.isArray(payload.items) && payload.items.length > 0
         ? payload.items
         : [{
@@ -221,15 +289,44 @@ exports.payhipWebhook = async (req, res) => {
             quantity: 1,
           }];
 
+      // Requirement 3: Idempotency, item-aware. A transaction may hold several items; if an earlier delivery
+      // stored only some of them (failure part-way), a retry must finish the REST, not skip the whole payment.
+      // The database is the source of truth: an order that exists only in the local metadata file does not
+      // count, so a retry repairs it.
+      const isPaidRow = (o) => o.status === "paid" || o.status === "successful";
+      const alreadyProcessed = Array.isArray(existingDbOrders)
+        ? existingDbOrders.filter(isPaidRow).length
+        : (allExisting.some(isPaidRow) ? items.length : 0);
+      if (alreadyProcessed >= items.length) {
+        console.log(`[payhipWebhook] Transaction ${transactionId} already processed. Skipping duplicate.`);
+        return res.json({ received: true, idempotent: true });
+      }
+
+      // DEFAULT-DENY: every item must be a product this site sells. If any is not, NOTHING is granted and the
+      // event is rejected (it used to default unknown products to "Digital Companion"). Nothing personal is logged.
+      const mappings = [];
+      for (const item of items) {
+        const mapped = typeof resolvePayhipProductMapping === "function"
+          ? await resolvePayhipProductMapping(item, payload)
+          : mapPayhipProductToBook(item, payload);
+        if (!mapped) {
+          console.warn(`[payhipWebhook] REJECTED unsupported product in transaction ${transactionId}: ` +
+            `product_id=${item.product_id || payload.product_id || "-"} product_key=${item.product_key || payload.product_key || "-"} ` +
+            `name="${String(item.product_name || payload.product_name || "-").slice(0, 80)}" price=${item.price || payload.price || "-"}`);
+          notifyUnsupportedProduct({ transactionId, item, payload });
+          return res.status(422).json({ error: "unsupported_product", received: false });
+        }
+        mappings.push(mapped);
+      }
+
       const rawPriceCents = Number(payload.price) || 0;
       const currency = (payload.currency || "USD").toUpperCase();
       const totalAmount = (rawPriceCents / 100).toFixed(2);
 
       // Process items and grant entitlements
-      for (const item of items) {
-        const mapping = typeof resolvePayhipProductMapping === "function"
-          ? await resolvePayhipProductMapping(item, payload)
-          : mapPayhipProductToBook(item, payload);
+      for (let idx = alreadyProcessed; idx < items.length; idx++) {
+        const item = items[idx];
+        const mapping = mappings[idx];
 
         const orderId = crypto.randomUUID();
         const orderNumber = `ORD-PAYHIP-${transactionId}-${crypto.randomBytes(2).toString("hex").toUpperCase()}`;
@@ -291,10 +388,23 @@ exports.payhipWebhook = async (req, res) => {
           payhip_transaction_id: transactionId,
         });
 
-        await executeWithSchemaFallback(
+        const insertRes = await executeWithSchemaFallback(
           (dbPayload) => supabase.from("orders").insert([dbPayload]),
           orderRecord
         );
+        if (insertRes && insertRes.error) {
+          if (insertRes.error.code === "23505") {
+            // A unique constraint (see docs/STAGE0-SECURITY.md) says another delivery already stored this order.
+            console.log(`[payhipWebhook] Duplicate rejected by the database for transaction ${transactionId}. Treating as already processed.`);
+            continue;
+          }
+          // Previously this was ignored and Payhip was told "received", so a failed insert lost the purchase.
+          console.error(`[payhipWebhook] Order insert failed for transaction ${transactionId}: ${insertRes.error.code || ""} ${insertRes.error.message}`);
+          return res.status(500).json({ error: "Failed to record order." });
+        }
+
+        // Grant (or confirm) the entitlement this order buys. Never fails the webhook: a repair path exists (sync on access).
+        await syncEntitlement({ ...orderRecord, created_at: new Date().toISOString() });
 
         // Send order confirmation and reader / download access email
         const clientUrl = process.env.CLIENT_URL || "https://siddiqui.digital";
@@ -399,6 +509,20 @@ exports.payhipWebhook = async (req, res) => {
         return res.json({ received: true, partial_refund: true, access_preserved: true });
       }
 
+      // Refund arrived before the purchase (or no order exists yet): remember it, so a late "paid" event for the
+      // same transaction is rejected by the out-of-order guard above instead of granting access.
+      if (!existingOrder) {
+        saveOrderMetadata(`refund-tombstone-${transactionId}`, {
+          payhip_transaction_id: transactionId,
+          status: "refunded",
+          refund_status: "refunded",
+          refund_date: new Date().toISOString(),
+          tombstone: true,
+        });
+        console.warn(`[payhipWebhook] Refund for ${transactionId} received but no order exists yet. Recorded so a later payment event cannot grant access.`);
+        return res.json({ received: true, refund_recorded: true, order_found: false });
+      }
+
       // Full Refund: revoke entitlements immediately
       console.log(`[payhipWebhook] Full refund for ${transactionId}. Revoking associated entitlements.`);
       const refundPayload = {
@@ -423,6 +547,11 @@ exports.payhipWebhook = async (req, res) => {
         });
       }
 
+      // Revoke the entitlement of every order row in this transaction (history and launch position are kept).
+      for (const row of existingDbOrders && existingDbOrders.length ? existingDbOrders : (existingOrder ? [existingOrder] : [])) {
+        await syncEntitlement({ ...row, ...refundPayload, status: "refunded" });
+      }
+
       return res.json({ received: true, refunded: true, access_revoked: true });
     }
 
@@ -433,6 +562,13 @@ exports.payhipWebhook = async (req, res) => {
     console.error("[payhipWebhook] Processing error:", error);
     return res.status(500).json({ error: "Internal webhook processing error." });
   }
+  }).catch((lockErr) => {
+    if (lockErr && lockErr.code === "LOCK_TIMEOUT") {
+      console.error(`[payhipWebhook] Could not obtain the lock for transaction ${transactionId}; asking Payhip to retry.`);
+      return res.status(503).json({ error: "Busy, please retry." });
+    }
+    throw lockErr;
+  });
 };
 
 /**
@@ -566,6 +702,12 @@ exports.confirmPayhipClaim = async (req, res) => {
       claimedFrom: claim.purchaseEmail,
       claimedAt: new Date().toISOString(),
     });
+
+    // The entitlement follows the order to the account it was just linked to.
+    try {
+      const { data: claimed } = await supabase.from("orders").select("*").eq("id", claim.orderId).maybeSingle();
+      if (claimed) await syncEntitlement(claimed);
+    } catch (e) { console.warn("[confirmPayhipClaim] entitlement sync:", e.message); }
 
     pendingClaims.delete(claimKey);
 

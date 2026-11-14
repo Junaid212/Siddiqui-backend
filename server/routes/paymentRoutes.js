@@ -6,6 +6,8 @@ const {
   getOrderStatus,
   downloadProductFile,
   readOnlineBook,
+  createAccessLink,
+  serveAccessLink,
   requestReplacementLink,
   stripeWebhook,
 } = require("../controllers/paymentController");
@@ -13,6 +15,7 @@ const { validateDiscount } = require("../controllers/discountController");
 const { getCustomerOrders, checkOwnership } = require("../controllers/cartController");
 const { createPayPalOrder, capturePayPalOrder, paypalWebhook } = require("../controllers/paypalController");
 const { payhipWebhook, claimPayhipPurchase, confirmPayhipClaim } = require("../controllers/payhipController");
+const { requireCustomer } = require("../utils/requireCustomer");
 
 // Digital Products Catalog
 router.get("/products", getProducts);
@@ -40,9 +43,9 @@ router.post("/create-cart-checkout", createPayPalOrder);
 // Discount Code Validation
 router.post("/validate-discount", validateDiscount);
 
-// Customer Order History & Ownership Verification
-router.get("/my-orders", getCustomerOrders);
-router.get("/check-ownership", checkOwnership);
+// Customer Order History & Ownership Verification (signed-in customers only; identity comes from the session)
+router.get("/my-orders", requireCustomer, getCustomerOrders);
+router.get("/check-ownership", requireCustomer, checkOwnership);
 
 // Order Status & Confirmation (Unified for PayPal, Payhip, Stripe, and tokens)
 router.get("/order-status/:identifier", getOrderStatus);
@@ -50,6 +53,10 @@ router.get("/order-status/:identifier", getOrderStatus);
 // Protected Online Reader Endpoint (in-browser view, no download)
 router.get("/read/:token", readOnlineBook);
 router.get("/read", readOnlineBook);
+
+// Short-lived, order-bound links for signed-in customers (My Orders). No reusable credential is ever listed.
+router.post("/orders/:id/access-link", requireCustomer, createAccessLink);
+router.get("/access/:signed", serveAccessLink);
 
 // Secure Download Endpoint (Digital Companion Edition with valid license)
 router.get("/download/:token", downloadProductFile);

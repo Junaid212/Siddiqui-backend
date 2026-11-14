@@ -1,6 +1,9 @@
 const Stripe = require("stripe");
 const crypto = require("crypto");
 const supabase = require("../config/supabaseClient");
+const { escapeLike } = require("../utils/requireCustomer");
+const { signAccess, verifyAccess, TTL_SECONDS } = require("../utils/accessLinks");
+const { checkCompanionDownload, checkReaderAccess, getCurrentCompanionPath } = require("../utils/entitlements");
 const { sendOrderConfirmationEmail } = require("../utils/orderEmail");
 const { ensureCustomerAccount } = require("../utils/customerAuth");
 const { getProductFile, setProductFile } = require("../utils/productFileStore");
@@ -34,7 +37,7 @@ const DEFAULT_PRODUCTS = [
     short_description: "From transaction to human progress. The definitive strategic playbook for modern digital marketing and high-performance brand leadership.",
     description: "From transaction to human progress. Marketing Reclassified breaks down cutting-edge marketing frameworks, behavioral psychology, and sustainable growth engines to help entrepreneurs and brand leaders scale with clarity and precision.",
     price: 99.00,
-    currency: "AED",
+    currency: "USD",
     format: "PDF",
     cover_image: "https://cneariiepqywvjpmznqn.supabase.co/storage/v1/object/public/product-covers/1788934311298-book1.webp",
     file_path: "ebooks/marketing-reclassified.pdf",
@@ -51,7 +54,7 @@ const DEFAULT_PRODUCTS = [
     short_description: "A practical approach to creating sustainable value in a changing world.",
     description: "A practical approach to creating sustainable value in a changing world.",
     price: 49.00,
-    currency: "AED",
+    currency: "USD",
     format: "PDF",
     cover_image: "https://cneariiepqywvjpmznqn.supabase.co/storage/v1/object/public/product-covers/1788934505865-book3.webp",
     file_path: null,
@@ -68,7 +71,7 @@ const DEFAULT_PRODUCTS = [
     short_description: "Practical tool for measuring managing and preventing value drift.",
     description: "Practical tool for measuring managing and preventing value drift.",
     price: 79.00,
-    currency: "AED",
+    currency: "USD",
     format: "PDF",
     cover_image: "https://cneariiepqywvjpmznqn.supabase.co/storage/v1/object/public/product-covers/1788934420360-book2.webp",
     file_path: null,
@@ -206,6 +209,33 @@ async function findOrderByIdentifier(identifier) {
   return null;
 }
 
+// A refunded order must never be served, whichever refund marker the update path set (Payhip webhook:
+// status + refund_status; admin refund button: status, and refund_status when the column exists).
+function isRefundedOrder(order) {
+  if (!order) return false;
+  const refundStatus = String(order.refund_status || "").toLowerCase();
+  return String(order.status || "").toLowerCase() === "refunded" || refundStatus === "refunded" || refundStatus === "full";
+}
+
+// What a legacy download / reader link may carry as its credential. findOrderByIdentifier() is deliberately generous
+// (order number, Payhip / PayPal ids, ...) because other pages use it to LOOK UP an order, but order numbers and
+// provider transaction ids are shown in e-mails, receipts and screenshots and some are guessable, so they must never
+// unlock a file. After the order is found, the value is accepted only if it IS one of that order's own secrets:
+// its random download token, its Stripe checkout session id, or its UUID (kept for the post-purchase page until
+// entitlement-based access replaces it). Format independent, so older token formats keep working.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function credentialMatchesOrder(order, credential) {
+  const c = String(credential || "");
+  if (!c || !order) return false;
+  return c === String(order.download_token || "") || c === String(order.stripe_session_id || "") || c === String(order.id || "");
+}
+
+// Is this the Marketing Reclassified book (the product the Companion PDF belongs to)?
+function isCatalogProduct(product, order) {
+  const id = String((product && product.id) || (order && order.product_id) || "").toLowerCase();
+  return id === String(process.env.MR_PRODUCT_ID || "04b84648-3609-4b31-9ded-2486bacf1e74").toLowerCase() || String((product && product.title) || (order && order.book_name) || "").toLowerCase().includes("marketing reclassified");
+}
+
 // Helper to resolve product file path accurately
 function resolveProductFilePath(product) {
   if (!product) return null;
@@ -248,7 +278,7 @@ exports.getProducts = async (req, res) => {
         short_description: p.description ? p.description.substring(0, 140) + '...' : '',
         description: p.description || '',
         price: Number(p.price) || 49.00,
-        currency: p.currency || "AED",
+        currency: p.currency || "USD",
         format: p.format || "PDF",
         cover_image: p.cover_image || "/assets/images/img/30.webp",
         file_path: resolvedFile,
@@ -286,7 +316,7 @@ exports.getProductById = async (req, res) => {
           title: data.title,
           description: data.description,
           price: Number(data.price) || 49.00,
-          currency: data.currency || "AED",
+          currency: data.currency || "USD",
           cover_image: data.cover_image || "/assets/images/img/30.webp",
           format: data.format || "PDF",
           file_path: resolvedFile,
@@ -594,7 +624,7 @@ exports.stripeWebhook = async (req, res) => {
     } catch (e) {
       console.warn("[stripeWebhook] ensureCustomerAccount:", e.message);
     }
-    const currency = (session.currency || "AED").toUpperCase();
+    const currency = (session.currency || "USD").toUpperCase();
 
     // Look up existing order safely
     const existingOrder = await findOrderByIdentifier(orderId || sessionId);
@@ -733,8 +763,8 @@ exports.getOrderStatus = async (req, res) => {
 
     const isExpired = order.download_expires_at ? new Date() > new Date(order.download_expires_at) : false;
     const isLimitReached = (Number(order.download_count) || 0) >= (Number(order.download_limit) || 3);
-    const isRefunded = order.status === "refunded";
-    const isPaid = order.status === "paid" || order.status === "successful";
+    const isRefunded = isRefundedOrder(order);
+    const isPaid = !isRefunded && (order.status === "paid" || order.status === "successful");
 
     // Resolve attached file status
     let hasFile = false;
@@ -759,7 +789,7 @@ exports.getOrderStatus = async (req, res) => {
         book_name: productTitle,
         product_id: order.product_id || null,
         amount: Number(order.amount) || 0,
-        currency: order.currency || "AED",
+        currency: order.currency || "USD",
         status: order.status,
         email: order.email || null,
         download_token: order.download_token || order.stripe_session_id || order.id,
@@ -802,8 +832,15 @@ exports.downloadProductFile = async (req, res) => {
       });
     }
 
+    if (!req.verifiedOrderId && !credentialMatchesOrder(order, token)) {
+      // matched only an order number / provider transaction id: not a credential
+      return res.status(404).json({
+        error: "Invalid download link. Please check your order confirmation email or request a replacement link."
+      });
+    }
+
     // 2. Security checks
-    if (order.status === "refunded") {
+    if (isRefundedOrder(order)) {
       return res.status(403).json({
         error: "This order has been refunded. Digital download access is revoked."
       });
@@ -826,6 +863,13 @@ exports.downloadProductFile = async (req, res) => {
       return res.status(403).json({
         error: "This order is for the Online Reading Edition ($20.00), which includes protected in-browser reading only. PDF file downloads and full Companion Packs are exclusively included with the Digital Companion Edition ($49.99). Please upgrade your account to download the file."
       });
+    }
+
+    // Central entitlement gate: only a customer whose CURRENT entitlement is Digital Companion may download Companion files
+    // (a refund, an administrative revocation or an Online-only edition stops it immediately, whatever the link says).
+    const dlGate = await checkCompanionDownload(order);
+    if (!dlGate.allowed) {
+      return res.status(403).json({ error: "Your current edition does not include Companion downloads.", code: "not_entitled" });
     }
 
     if (order.download_expires_at && new Date() > new Date(order.download_expires_at)) {
@@ -871,7 +915,9 @@ exports.downloadProductFile = async (req, res) => {
     }
 
     // 4. Resolve the specific file attached to THIS product
-    const specificFilePath = resolveProductFilePath(product);
+    // The Companion PDF an administrator marked current in the dashboard wins over the older per-server file mapping.
+    const currentCompanion = isCatalogProduct(product, order) ? await getCurrentCompanionPath() : null;
+    const specificFilePath = currentCompanion || resolveProductFilePath(product);
 
     if (!specificFilePath) {
       console.warn(`[downloadProductFile] No PDF attached for product: ${product?.title || order.book_name} (ID: ${order.product_id})`);
@@ -937,17 +983,26 @@ exports.downloadProductFile = async (req, res) => {
  * POST /api/payment/request-replacement — Request a replacement link via email
  */
 exports.requestReplacementLink = async (req, res) => {
-  const { email, orderNumber } = req.body;
+  const { email, orderNumber } = req.body || {};
+  const cleanEmail = typeof email === "string" ? email.trim() : "";
 
-  if (!email || !email.trim()) {
+  if (!cleanEmail) {
     return res.status(400).json({ error: "Email is required to locate orders." });
+  }
+  // A "%" or "_" must never act as a wildcard: that would match other customers' orders and rotate their links.
+  if (!/^[^\s@,%()]+@[^\s@,%()]+\.[^\s@,%()]+$/.test(cleanEmail)) {
+    return res.status(400).json({ error: "Please enter a valid email address." });
   }
 
   try {
-    let query = supabase.from("orders").select("*").ilike("email", email.trim());
-    if (orderNumber && orderNumber.trim()) {
-      const cleanNum = orderNumber.trim();
-      query = query.or(`order_number.ilike.%${cleanNum}%,stripe_session_id.ilike.%${cleanNum}%,id.ilike.%${cleanNum}%`);
+    let query = supabase.from("orders").select("*").ilike("email", escapeLike(cleanEmail));
+    if (typeof orderNumber === "string" && orderNumber.trim()) {
+      // Keep only characters that can occur in an order number / session id, so the value cannot alter the filter.
+      const safeNum = orderNumber.trim().replace(/[^A-Za-z0-9_-]/g, "");
+      if (!safeNum) {
+        return res.status(404).json({ error: "No matching orders found for this email address." });
+      }
+      query = query.or(`order_number.ilike.%${safeNum}%,stripe_session_id.ilike.%${safeNum}%,id.ilike.%${safeNum}%`);
     }
 
     const { data: orders, error } = await query;
@@ -983,12 +1038,12 @@ exports.requestReplacementLink = async (req, res) => {
     const downloadUrl = `${clientUrl}/order-success?session_id=${paidOrder.stripe_session_id}&token=${newDownloadToken}`;
 
     await sendOrderConfirmationEmail({
-      to: email.trim(),
+      to: paidOrder.email || cleanEmail,
       customerName: paidOrder.customer_name || "Valued Customer",
       orderNumber: paidOrder.order_number || `ORD-${paidOrder.id?.substring(0, 8).toUpperCase()}`,
       productName: paidOrder.book_name || "Digital Publication",
       amount: paidOrder.amount,
-      currency: paidOrder.currency || "AED",
+      currency: paidOrder.currency || "USD",
       downloadUrl,
       expiryHours: 72,
       downloadLimit: 3,
@@ -1021,12 +1076,22 @@ exports.readOnlineBook = async (req, res) => {
       return res.status(404).json({ error: "Order not found. Please sign in to your reader account." });
     }
 
+    if (!req.verifiedOrderId && !credentialMatchesOrder(order, token)) {
+      return res.status(404).json({ error: "Order not found. Please sign in to your reader account." });
+    }
+
+    if (isRefundedOrder(order)) {
+      return res.status(403).json({ error: "This purchase has been refunded. Online reading access is revoked." });
+    }
+
     if (order.status !== "paid" && order.status !== "successful") {
       return res.status(403).json({ error: "Payment verification required to access online reader." });
     }
 
-    if (order.status === "refunded") {
-      return res.status(403).json({ error: "This purchase has been refunded. Online reading access is revoked." });
+    // Only the Online Reading edition may use the reader; Digital Companion customers never get it.
+    const rdGate = await checkReaderAccess(order);
+    if (!rdGate.allowed) {
+      return res.status(403).json({ error: "The online reader is part of the Online Reading edition only.", code: "not_entitled" });
     }
 
     // Resolve product
@@ -1079,4 +1144,46 @@ exports.readOnlineBook = async (req, res) => {
     console.error("[readOnlineBook] Error:", err);
     return res.status(500).json({ error: "Failed to stream publication for online reading." });
   }
+};
+
+/**
+ * POST /api/payment/orders/:id/access-link   body: { purpose: "download" | "read" }   (signed-in customer)
+ * Issues a short-lived link to ONE of the caller's own orders. The order must belong to the session (user id, or the
+ * confirmed e-mail on the session); anything else answers 404 so another customer's order ids cannot be probed.
+ */
+exports.createAccessLink = async (req, res) => {
+  const user = req.authUser;
+  const orderId = String(req.params.id || "");
+  const purpose = req.body && req.body.purpose;
+  if (!UUID_RE.test(orderId)) return res.status(400).json({ error: "Invalid order." });
+  if (purpose !== "download" && purpose !== "read") return res.status(400).json({ error: "Invalid purpose." });
+  try {
+    const { data: order, error } = await supabase.from("orders").select("*").eq("id", orderId).maybeSingle();
+    if (error) return res.status(500).json({ error: "Could not look up the order." });
+    const sameEmail = order && order.email && String(order.email).trim().toLowerCase() === String(user.email).trim().toLowerCase();
+    const mine = order && ((order.user_id && order.user_id === user.id) || sameEmail);
+    if (!mine) return res.status(404).json({ error: "Order not found." });
+    if (isRefundedOrder(order)) return res.status(403).json({ error: "This order has been refunded. Access is revoked." });
+    if (order.status !== "paid" && order.status !== "successful") return res.status(403).json({ error: "Payment verification required." });
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ path: `/payment/access/${signAccess({ orderId: order.id, purpose })}`, expiresIn: TTL_SECONDS });
+  } catch (err) {
+    console.error("[createAccessLink] Error:", err);
+    return res.status(500).json({ error: "Could not create the link." });
+  }
+};
+
+/**
+ * GET /api/payment/access/:signed — serves the file or reader for a verified, unexpired link. All the normal checks
+ * (refund, payment status, edition rules, expiry, download limit) run again at this moment, so a refund issued after
+ * the link was created still takes effect.
+ */
+exports.serveAccessLink = (req, res) => {
+  const verified = verifyAccess(req.params.signed);
+  if (!verified) {
+    return res.status(403).json({ error: "This link has expired or is not valid. Please go back to My Orders and try again." });
+  }
+  req.verifiedOrderId = verified.orderId;
+  req.params.token = verified.orderId;
+  return verified.purpose === "download" ? exports.downloadProductFile(req, res) : exports.readOnlineBook(req, res);
 };

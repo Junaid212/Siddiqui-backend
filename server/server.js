@@ -17,6 +17,7 @@ const blogRoutes = require("./routes/blogRoutes");
 const publicRoutes = require("./routes/publicRoutes");
 const askSidRoutes = require("./routes/askSidRoutes");
 const webhookRoutes = require("./routes/webhookRoutes");
+const readerRoutes = require("./routes/readerRoutes");
 
 const app = express();
 
@@ -66,6 +67,7 @@ app.use("/api/blog", blogRoutes);
 app.use("/api/public", publicRoutes);
 app.use("/api/ask-sid", askSidRoutes);
 app.use("/api/webhooks", webhookRoutes);
+app.use("/api/reader", readerRoutes);
 
 // Health check
 app.get("/api/health", (req, res) => {
