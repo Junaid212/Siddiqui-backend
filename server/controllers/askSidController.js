@@ -4,7 +4,7 @@
  * Access is decided here, on every request, from the customer's entitlement (never from the browser):
  *   Digital Companion (active, not expired, not refunded) -> answers, within 5/day and 100 total (150 for the first 200 launch buyers)
  *   Online Reading                                         -> fixed upgrade message with the configured upgrade link
- *   Anonymous / no purchase                                -> the existing public demo (if enabled), standard book content only
+ *   Anonymous / no purchase                                -> refused (the free public demo was removed)
  * A question is RESERVED before it is answered, COMMITTED only when an answer was delivered, and RELEASED (not charged) when the
  * request is rejected, out of scope, or fails. The legacy controller stays in place as the fallback until the migration and the
  * knowledge index are installed, so deploying this code before them changes nothing for visitors.
@@ -55,16 +55,18 @@ const DENIAL = {
 };
 
 /** GET /api/ask-sid/config */
-exports.getPublicConfig = (req, res) => legacy.getPublicConfig(req, res);
+// The free demo is removed: whatever the stored settings say, the public configuration reports no demo.
+const noDemo = (res) => new Proxy(res, { get: (t, k) => (k === "json" ? (b) => t.json(b && typeof b === "object" ? { ...b, publicDemoEnabled: false, demoAvailable: false, demoQuestionsRemaining: 0, demoQuestionLimit: 0 } : b) : (typeof t[k] === "function" ? t[k].bind(t) : t[k])) });
+exports.getPublicConfig = (req, res) => legacy.getPublicConfig(req, noDemo(res));
 
 /** GET /api/ask-sid/access - what the signed-in customer may do, with the remaining allowance. */
 exports.checkUserAccess = async (req, res) => {
   try {
     const who = await identify(req);
     if (who.error) return res.status(who.status).json({ error: who.error });
-    if (who.anonymous) return legacy.checkUserAccess(req, res);
+    if (who.anonymous) return legacy.checkUserAccess(req, noDemo(res));
     let access;
-    try { access = await resolveAccess(who.user.email); } catch (e) { if (e.notMigrated) return legacy.checkUserAccess(req, res); throw e; }
+    try { access = await resolveAccess(who.user.email); } catch (e) { if (e.notMigrated) return legacy.checkUserAccess(req, noDemo(res)); throw e; }
     const base = await (async () => { const s = await getAskSidSettings().catch(() => ({})); return { askSidEnabled: s.askSidEnabled !== false, ...(await upgradePayload()) }; })();
     res.setHeader("Cache-Control", "private, no-store");
     const hasCompanion = access.edition === "companion";
@@ -108,6 +110,10 @@ exports.askQuestion = async (req, res) => {
     let access = null;
     if (who.user) {
       try { access = await resolveAccess(who.user.email); } catch (e) { if (e.notMigrated) return legacy.askQuestion(req, res); throw e; }
+    }
+    // No free access: a visitor, or a signed-in customer without a purchase, gets no answers (the public demo was removed).
+    if (!access || (access.edition !== "online" && access.edition !== "companion")) {
+      return res.status(403).json({ error: "unauthorized", message: "Ask SID is available with the Digital Companion Edition. Please sign in with the account you purchased with.", ...(await upgradePayload()) });
     }
     if (!(await knowledgeReady())) return legacy.askQuestion(req, res); // the index is not installed yet: unchanged behaviour
 

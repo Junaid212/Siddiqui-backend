@@ -2,7 +2,7 @@
  * entitlements.js - the ONE place that decides what a customer may do.
  *
  *   Online Reading edition  -> online reader only
- *   Digital Companion       -> Companion downloads + Ask SID only (never the online reader)
+ *   Digital Companion       -> online reader + Companion downloads + Ask SID (the reader is included from 2026-11-16)
  *   Upgrade                 -> Online is revoked, Companion is granted
  *
  * Entitlements live in the user_entitlements table and are derived from PAID orders (never from anything the browser says).
@@ -18,7 +18,7 @@ const MARKETING_RECLASSIFIED_PRODUCT_ID = String(process.env.MR_PRODUCT_ID || "0
 const PERMISSIONS = Object.freeze({
   none: Object.freeze({ reader: false, companionDownloads: false, askSid: false }),
   online: Object.freeze({ reader: true, companionDownloads: false, askSid: false }),
-  companion: Object.freeze({ reader: false, companionDownloads: true, askSid: true }),
+  companion: Object.freeze({ reader: true, companionDownloads: true, askSid: true }),
 });
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -168,18 +168,25 @@ async function checkPermissionForEmail(email, permission) {
 const checkCompanionDownload = (order) => checkPermissionForEmail(order.email, "companionDownloads");
 const checkReaderAccess = (order) => checkPermissionForEmail(order.email, "reader");
 
-let companionPathCache = { at: 0, path: null };
-/** The Companion PDF an administrator marked CURRENT (storage path), or null. The database is the source of truth: the older per-server JSON file mapping is only a fallback. */
-async function getCurrentCompanionPath() {
-  if (Date.now() - companionPathCache.at < 30000) return companionPathCache.path;
+const filePathCache = {};
+/**
+ * The PDF an administrator marked CURRENT for one kind (storage path), or null.
+ *   kind "companion_pdf" (default): the Companion Pack, exactly as before.
+ *   kind "book_pdf": the download-only book PDF.
+ * The database is the source of truth: the older per-server JSON file mapping is only a fallback.
+ */
+async function getCurrentFilePath(kind = "companion_pdf") {
+  const c = filePathCache[kind];
+  if (c && Date.now() - c.at < 30000) return c.path;
   let p = null;
   try {
-    const { data } = await supabase.from("companion_files").select("storage_path,process_status").eq("catalog_key", CATALOG_KEY).eq("is_current", true).maybeSingle();
+    const { data } = await supabase.from("companion_files").select("storage_path,process_status").eq("catalog_key", CATALOG_KEY).eq("kind", kind).eq("is_current", true).maybeSingle();
     p = data && data.process_status === "indexed" ? data.storage_path : null;
   } catch { p = null; }
-  companionPathCache = { at: Date.now(), path: p };
+  filePathCache[kind] = { at: Date.now(), path: p };
   return p;
 }
+const getCurrentCompanionPath = () => getCurrentFilePath("companion_pdf");
 
 /** Delivery log shown in the admin dashboard. Identifiers only (event type, provider transaction id), never personal data. Best effort. */
 async function recordWebhookEvent({ provider, eventType, transactionId, outcome, httpStatus, detail }) {
@@ -220,5 +227,5 @@ function requirePermission(permission) {
 
 module.exports = {
   CATALOG_KEY, PERMISSIONS, uuidOrNull, normalizeEmail, escapeLike, isRefundedOrder, isPaidOrder, isCatalogOrder, editionFromOrder,
-  syncOrderEntitlement, syncEmailEntitlements, getActiveEntitlement, resolveAccess, requirePermission, getCurrentCompanionPath, recordWebhookEvent, checkPermissionForEmail, checkCompanionDownload, checkReaderAccess, describe, rpc,
+  syncOrderEntitlement, syncEmailEntitlements, getActiveEntitlement, resolveAccess, requirePermission, getCurrentCompanionPath, getCurrentFilePath, recordWebhookEvent, checkPermissionForEmail, checkCompanionDownload, checkReaderAccess, describe, rpc,
 };

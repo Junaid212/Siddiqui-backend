@@ -24,7 +24,7 @@ const ID = { alice: '11111111-1111-4111-8111-111111111111', bob: '22222222-2222-
 const row = (id, over) => ({ id, user_id: null, currency: 'USD', status: 'paid', product_id: BOOK, download_count: 0, download_limit: 3, payment_provider: 'payhip', created_at: '2026-10-01T00:00:00Z', ...over });
 const SEED = { ebooks: [{ id: BOOK, title: 'Marketing Reclassified', file_path: 'ebooks/marketing-reclassified.pdf', active: true, price: 49 }], orders: [
   row(ID.alice, { user_id: 'u-alice', email: 'alice@example.com', order_number: 'ORD-ALICE-1', book_name: 'Marketing Reclassified — Online Reading Edition', amount: 20, access_tier: 'online', download_token: null, download_limit: 0 }),
-  row(ID.bob, { user_id: 'u-bob', email: 'bob@example.com', order_number: 'ORD-BOB-1', book_name: 'Marketing Reclassified — Digital Companion Edition', amount: 49, access_tier: 'companion', download_token: 'tok-bob-companion' }),
+  row(ID.bob, { user_id: 'u-bob', email: 'bob@example.com', order_number: 'ORD-BOB-1', book_name: 'Marketing Reclassified — Digital Companion Edition', amount: 49, access_tier: 'companion', download_token: 'tok-bob-companion', book_download_count: 0 }),
 ] };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const children = [];
@@ -32,7 +32,7 @@ const children = [];
 function call(method, urlPath, { token, body, port = PORT, headers = {} } = {}) {
   return new Promise((resolve, reject) => {
     const data = body === undefined ? null : JSON.stringify(body);
-    const req = http.request({ host: '127.0.0.1', port, path: urlPath, method, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}), ...headers } }, (res) => {
+    const req = http.request({ host: '127.0.0.1', port, path: urlPath, method, agent: false, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}), ...headers } }, (res) => {
       const chunks = []; res.on('data', (c) => chunks.push(c));
       res.on('end', () => { const text = Buffer.concat(chunks).toString('utf8'); let json = null; try { json = JSON.parse(text); } catch { /* not json */ } resolve({ status: res.statusCode, json, text, type: res.headers['content-type'] || '', headers: res.headers }); });
     });
@@ -75,7 +75,7 @@ test('R1. the permission matrix is exactly the specified one', () => {
   process.env.SUPABASE_URL = 'http://127.0.0.1:9'; process.env.SUPABASE_SERVICE_ROLE = 'x';
   const { PERMISSIONS } = require('../utils/entitlements');
   assert.deepEqual(PERMISSIONS.online, { reader: true, companionDownloads: false, askSid: false });
-  assert.deepEqual(PERMISSIONS.companion, { reader: false, companionDownloads: true, askSid: true });
+  assert.deepEqual(PERMISSIONS.companion, { reader: true, companionDownloads: true, askSid: true });
   assert.deepEqual(PERMISSIONS.none, { reader: false, companionDownloads: false, askSid: false });
   assert.ok(Object.isFrozen(PERMISSIONS.online));
 });
@@ -101,18 +101,18 @@ test('R3. drafts, unpublished chapters and unpublished books are indistinguishab
   assert.ok(!/SECRET|draft-chapter|withdrawn/.test(list.text), 'the chapter list holds published chapters only');
 });
 
-test('R4. a Digital Companion buyer, a customer with no purchase and anonymous visitors cannot use the reader', async () => {
-  const bob = await call('GET', '/api/reader/books', { token: 'bob-token' }); assert.equal(bob.status, 403); assert.equal(bob.json.code, 'not_entitled');
-  assert.equal((await call('GET', '/api/reader/books/marketing-reclassified-online/chapters/principle-first-mandate', { token: 'bob-token' })).status, 403);
+test('R4. a Digital Companion buyer CAN use the reader; a customer with no purchase and anonymous visitors cannot', async () => {
+  assert.equal((await call('GET', '/api/reader/books', { token: 'bob-token' })).status, 200);
+  assert.equal((await call('GET', '/api/reader/books/marketing-reclassified-online/chapters/principle-first-mandate', { token: 'bob-token' })).status, 200);
   assert.equal((await call('GET', '/api/reader/books', { token: 'eve-token' })).status, 403);
   assert.equal((await call('GET', '/api/reader/books')).status, 401);
   assert.equal((await call('GET', '/api/reader/books', { token: 'unconfirmed-token' })).status, 403, 'unconfirmed e-mail');
-  const acc = await call('GET', '/api/reader/access', { token: 'bob-token' }); assert.equal(acc.json.edition, 'companion'); assert.equal(acc.json.permissions.reader, false);
+  const acc = await call('GET', '/api/reader/access', { token: 'bob-token' }); assert.equal(acc.json.edition, 'companion'); assert.equal(acc.json.permissions.reader, true);
 });
 
-test('R5. the legacy PDF reader link no longer opens for a Digital Companion order', async () => {
+test('R5. the reader link opens for a Digital Companion order too, and still not for a refunded or unpurchased customer', async () => {
   const l = await call('POST', `/api/payment/orders/${ID.bob}/access-link`, { token: 'bob-token', body: { purpose: 'read' } });
-  const r = await call('GET', '/api' + l.json.path); assert.equal(r.status, 403); assert.equal(r.json.code, 'not_entitled');
+  const r = await call('GET', '/api' + l.json.path); assert.equal(r.status, 200);
   const l2 = await call('POST', `/api/payment/orders/${ID.alice}/access-link`, { token: 'alice-token', body: { purpose: 'read' } });
   assert.equal((await call('GET', '/api' + l2.json.path)).status, 200, 'the Online Reading buyer still opens the reader');
 });
@@ -126,7 +126,7 @@ test('R6. reading progress: saved per customer, validated, resumable, isolated b
   assert.equal((await put(tok('rita'), { chapterSlug: 'draft-chapter', percent: 10 })).status, 404, 'cannot save progress in an unpublished chapter');
   assert.equal((await put(tok('rita'), { chapterSlug: 'marketing-as-discipline', percent: 101 })).status, 400);
   assert.equal((await put(tok('rita'), { chapterSlug: 'marketing-as-discipline', percent: 'x' })).status, 400);
-  assert.equal((await put('bob-token', { chapterSlug: 'marketing-as-discipline', percent: 5 })).status, 403);
+  assert.equal((await put('eve-token', { chapterSlug: 'marketing-as-discipline', percent: 5 })).status, 403);
   assert.equal((await buyOnline('TXN-R6B', 'zed')).status, 200);
   assert.equal((await call('GET', '/api/reader/books/marketing-reclassified-online', { token: tok('zed') })).json.progress, null, 'another customer starts fresh');
   assert.equal((await put(tok('rita'), { chapterSlug: 'principle-first-mandate', percent: 100 })).status, 200);
@@ -147,9 +147,9 @@ test('P1. Online purchase: reader yes; Companion downloads no; Ask SID gets the 
   assert.equal((await call('GET', `/api/payment/download/${order.id}`)).status, 403, 'no Companion download for an Online order');
 });
 
-test('P2. Companion purchase: downloads and Ask SID yes; reader no; no Online entitlement is ever created', async () => {
+test('P2. Companion purchase: downloads and Ask SID yes; reader yes; no Online entitlement is ever created', async () => {
   assert.equal((await buyCompanion('TXN-P2', 'carol')).status, 200);
-  assert.equal((await call('GET', '/api/reader/books', { token: tok('carol') })).status, 403);
+  assert.equal((await call('GET', '/api/reader/books', { token: tok('carol') })).status, 200);
   const acc = await call('GET', '/api/ask-sid/access', { token: tok('carol') });
   assert.equal(acc.json.edition, 'companion'); assert.equal(acc.json.hasCompanionAccess, true); assert.equal(acc.json.hasOnlineAccess, false);
   assert.equal(acc.json.allowance.dailyLimit, 5); assert.equal(acc.json.allowance.totalLimit, 150); assert.equal(acc.json.allowance.launchOffer, true);
@@ -162,7 +162,7 @@ test('P3. Upgrade: Online access ends, Companion access starts, the 12-month per
   assert.equal((await call('GET', '/api/reader/books', { token: tok('uma') })).status, 200);
   const before = Date.now();
   assert.equal((await upgrade('TXN-P3B', 'uma')).status, 200);
-  assert.equal((await call('GET', '/api/reader/books', { token: tok('uma') })).status, 403, 'the reader is gone after the upgrade');
+  assert.equal((await call('GET', '/api/reader/books', { token: tok('uma') })).status, 200, 'the reader stays after the upgrade (Companion includes it)');
   const acc = await call('GET', '/api/ask-sid/access', { token: tok('uma') });
   assert.equal(acc.json.accessLevel, 'full'); assert.equal(acc.json.allowance.dailyLimit, 5);
   const expires = new Date(acc.json.allowance.expiresAt).getTime();
@@ -180,7 +180,8 @@ test('P4. Full refund removes downloads, Ask SID and (for Online) the reader at 
   assert.equal((await ask('dora', 'What is value drift?')).status, 200);
   assert.equal((await refund('TXN-P4', 'dora', item)).status, 200);
   const after = await ask('dora', 'What does the value drift diagnostic worksheet score?', { demoSessionId: 'demo-dora' });
-  assert.equal(after.json.isDemo, true, 'a refunded buyer is just a visitor again: no Companion allowance'); assert.equal(after.json.answer.outOfScope, true, 'Companion-only knowledge is gone');
+  assert.equal(after.status, 403, 'a refunded buyer gets nothing: no allowance and no demo'); assert.equal(after.json.error, 'unauthorized');
+  assert.equal((await call('GET', '/api/reader/books', { token: tok('dora') })).status, 403, 'the reader is revoked by the refund too');
   assert.equal((await call('GET', `/api/payment/download/${tokenBefore}`)).status < 400, false, 'the download token no longer works');
   assert.equal(ordersOf('dora@example.com').length, 1, 'the order is kept for auditing');
   assert.equal((await call('GET', '/api/ask-sid/access', { token: tok('dora') })).json.accessLevel, 'none');
@@ -199,7 +200,7 @@ test('P5. A duplicate webhook delivery does not create a second entitlement or l
 test('P6. Buying the Online edition after owning Companion never downgrades or combines access', async () => {
   assert.equal((await buyCompanion('TXN-P6A', 'cora')).status, 200);
   assert.equal((await buyOnline('TXN-P6B', 'cora')).status, 200);
-  assert.equal((await call('GET', '/api/reader/books', { token: tok('cora') })).status, 403);
+  assert.equal((await call('GET', '/api/reader/books', { token: tok('cora') })).status, 200);
   assert.equal((await call('GET', '/api/ask-sid/access', { token: tok('cora') })).json.accessLevel, 'full');
 });
 
@@ -251,19 +252,17 @@ test('A5. the standard allowance is 100 (150 only for launch-offer buyers); expi
   assert.equal((await buyCompanion('TXN-A5', 'kate')).status, 200);
   assert.equal((await refund('TXN-A5', 'kate', real('2H0Wr', 'Digital Companion'))).status, 200);
   const r = await ask('kate', 'What does the value drift diagnostic worksheet score?', { demoSessionId: 'demo-kate' });
-  assert.equal(r.json.isDemo, true); assert.equal(r.json.answer.outOfScope, true);
+  assert.equal(r.status, 403, 'a refunded customer gets no answers and no demo'); assert.equal(r.json.error, 'unauthorized');
   assert.equal((await call('GET', '/api/ask-sid/access', { token: tok('kate') })).json.accessLevel, 'none');
 });
 
-test('A6. anonymous visitors and customers without a purchase get only the existing demo (standard book content, one question)', async () => {
-  const q = 'What is the value drift diagnostic worksheet?'; // only Companion content answers this fully
-  const demo1 = await ask(null, q, { demoSessionId: 'demo-1' });
-  assert.equal(demo1.status, 200); assert.equal(demo1.json.isDemo, true); assert.equal(demo1.json.answer.outOfScope, true, 'Companion-only knowledge is NOT used for the demo');
-  const demo2 = await ask(null, 'What is value drift?', { demoSessionId: 'demo-1' });
-  assert.equal(demo2.status, 200); assert.ok(demo2.json.answer.sources.every((s) => s.origin === 'book'));
-  const demo3 = await ask(null, 'What is value drift?', { demoSessionId: 'demo-1' });
-  assert.equal(demo3.status, 403); assert.equal(demo3.json.error, 'demo_limit_reached');
-  const eve = await ask('eve', 'Explain price competition', { demoSessionId: 'demo-eve' }); assert.equal(eve.status, 200); assert.equal(eve.json.isDemo, true);
+test('A6. NO free access: anonymous visitors and customers without a purchase get no answers and no demo', async () => {
+  const demo1 = await ask(null, 'What is value drift?', { demoSessionId: 'demo-1' });
+  assert.equal(demo1.status, 403); assert.equal(demo1.json.error, 'unauthorized'); assert.ok(!demo1.json.answer);
+  const eve = await ask('eve', 'Explain price competition', { demoSessionId: 'demo-eve' });
+  assert.equal(eve.status, 403); assert.equal(eve.json.error, 'unauthorized');
+  const cfg = await call('GET', '/api/ask-sid/config'); assert.equal(cfg.json.publicDemoEnabled, false); assert.equal(cfg.json.demoQuestionLimit, 0);
+  const acc = await call('GET', '/api/ask-sid/access'); assert.equal(acc.json.demoAvailable, false); assert.equal(acc.json.demoQuestionsRemaining, 0);
 });
 
 test('A7. input is validated; an invalid or expired session is refused rather than silently downgraded', async () => {
@@ -314,4 +313,17 @@ test('D1. downloads serve the Companion PDF an administrator marked CURRENT (dat
   assert.equal((await call('GET', `/api/payment/download/${o.download_token}`)).status, 200);
   const calls = fs.readFileSync(LOG, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((c) => c.call === 'storage.download');
   assert.ok(calls.some((c) => c.path === 'companion/marketing-reclassified/v2-abcdef123456.pdf'), 'the current Companion file was requested: ' + JSON.stringify(calls.slice(-3)));
+});
+
+test('B1. book PDF: a Companion owner downloads it with its own counter; the Companion Pack counter is untouched; Online owners are refused', async () => {
+  const l = await call('POST', `/api/payment/orders/${ID.bob}/access-link`, { token: 'bob-token', body: { purpose: 'download' } });
+  const f = await call('GET', '/api' + l.json.path + '?file=book');
+  assert.equal(f.status, 200); assert.match(f.text, /^%PDF/);
+  const calls = fs.readFileSync(LOG, 'utf8').split('\n').filter(Boolean).map((x) => JSON.parse(x)).filter((c) => c.call === 'storage.download');
+  assert.ok(calls.some((c) => c.path === 'book/marketing-reclassified/v1-bookbook0000.pdf'), 'book file requested: ' + JSON.stringify(calls.slice(-3)));
+  const o = JSON.parse(fs.readFileSync(DB, 'utf8')).orders.find((x) => x.id === ID.bob);
+  assert.equal(o.book_download_count, 1); assert.equal(Number(o.download_count || 0), 0);
+  const la = await call('POST', `/api/payment/orders/${ID.alice}/access-link`, { token: 'alice-token', body: { purpose: 'download' } });
+  const fa = await call('GET', '/api' + la.json.path + '?file=book');
+  assert.equal(fa.status, 403);
 });

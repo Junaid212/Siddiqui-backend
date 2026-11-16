@@ -3,7 +3,7 @@ const crypto = require("crypto");
 const supabase = require("../config/supabaseClient");
 const { escapeLike } = require("../utils/requireCustomer");
 const { signAccess, verifyAccess, TTL_SECONDS } = require("../utils/accessLinks");
-const { checkCompanionDownload, checkReaderAccess, getCurrentCompanionPath } = require("../utils/entitlements");
+const { checkCompanionDownload, checkReaderAccess, getCurrentCompanionPath, getCurrentFilePath } = require("../utils/entitlements");
 const { sendOrderConfirmationEmail } = require("../utils/orderEmail");
 const { ensureCustomerAccount } = require("../utils/customerAuth");
 const { getProductFile, setProductFile } = require("../utils/productFileStore");
@@ -878,7 +878,14 @@ exports.downloadProductFile = async (req, res) => {
       });
     }
 
-    const currentCount = Number(order.download_count || 0);
+    // ?file=book asks for the book PDF (the second file of the Digital Companion edition). Anything else is the Companion Pack, as before.
+    // Every check above has already run for both files. The book PDF has its own counter (orders.book_download_count);
+    // if that column is not installed yet the request is refused rather than served without a limit.
+    const wantBook = String((req.query && req.query.file) || "").toLowerCase() === "book";
+    if (wantBook && !Object.prototype.hasOwnProperty.call(order, "book_download_count")) {
+      return res.status(503).json({ error: "The book PDF download is not available yet. Please try again later or contact info@siddiqui.digital." });
+    }
+    const currentCount = Number((wantBook ? order.book_download_count : order.download_count) || 0);
     const limit = Number(order.download_limit || 3);
     if (currentCount >= limit) {
       return res.status(403).json({
@@ -916,8 +923,17 @@ exports.downloadProductFile = async (req, res) => {
 
     // 4. Resolve the specific file attached to THIS product
     // The Companion PDF an administrator marked current in the dashboard wins over the older per-server file mapping.
-    const currentCompanion = isCatalogProduct(product, order) ? await getCurrentCompanionPath() : null;
-    const specificFilePath = currentCompanion || resolveProductFilePath(product);
+    let specificFilePath;
+    if (wantBook) {
+      // the book PDF has no fallback: only the file an administrator marked current, and only for the catalog book
+      specificFilePath = isCatalogProduct(product, order) ? await getCurrentFilePath("book_pdf") : null;
+      if (!specificFilePath) {
+        return res.status(404).json({ error: "The book PDF is not available yet. Please contact support at info@siddiqui.digital." });
+      }
+    } else {
+      const currentCompanion = isCatalogProduct(product, order) ? await getCurrentCompanionPath() : null;
+      specificFilePath = currentCompanion || resolveProductFilePath(product);
+    }
 
     if (!specificFilePath) {
       console.warn(`[downloadProductFile] No PDF attached for product: ${product?.title || order.book_name} (ID: ${order.product_id})`);
@@ -955,18 +971,22 @@ exports.downloadProductFile = async (req, res) => {
 
     // 6. Increment download count atomically
     if (order.id) {
-      saveOrderMetadata(order.id, { download_count: currentCount + 1 });
-      await executeWithSchemaFallback(
-        (payload) => supabase.from("orders").update(payload).eq("id", order.id),
-        { download_count: currentCount + 1 }
-      );
+      if (wantBook) {
+        await supabase.from("orders").update({ book_download_count: currentCount + 1 }).eq("id", order.id);
+      } else {
+        saveOrderMetadata(order.id, { download_count: currentCount + 1 });
+        await executeWithSchemaFallback(
+          (payload) => supabase.from("orders").update(payload).eq("id", order.id),
+          { download_count: currentCount + 1 }
+        );
+      }
     }
 
     // 7. Stream the exact file
     const safeTitle = (product?.title || order.book_name || "Digital-Publication")
       .replace(/[^a-zA-Z0-9_-]/g, "_")
       .replace(/_+/g, "_");
-    const filename = `${safeTitle}.pdf`;
+    const filename = wantBook ? "Marketing_Reclassified_Book.pdf" : `${safeTitle}.pdf`;
 
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
@@ -1088,10 +1108,10 @@ exports.readOnlineBook = async (req, res) => {
       return res.status(403).json({ error: "Payment verification required to access online reader." });
     }
 
-    // Only the Online Reading edition may use the reader; Digital Companion customers never get it.
+    // The reader is included with the Online Reading and the Digital Companion editions (decided by the central entitlement).
     const rdGate = await checkReaderAccess(order);
     if (!rdGate.allowed) {
-      return res.status(403).json({ error: "The online reader is part of the Online Reading edition only.", code: "not_entitled" });
+      return res.status(403).json({ error: "The online reader is included with the Online Reading and Digital Companion editions.", code: "not_entitled" });
     }
 
     // Resolve product

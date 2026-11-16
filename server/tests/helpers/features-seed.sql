@@ -16,3 +16,7 @@ INSERT INTO public.companion_files (id, storage_path, original_name, size_bytes,
 VALUES ('f0000000-0000-4000-8000-000000000001', 'companion/marketing-reclassified/v2-abcdef123456.pdf', 'companion-v2.pdf', 1234, 'abcdef123456abcdef123456abcdef123456abcdef123456abcdef123456abcd', 2, true, 'indexed', 1);
 INSERT INTO public.reader_chapters (id, book_id, slug, title, position, content_html, status) VALUES
   ('c0000000-0000-4000-8000-000000000006', 'b0000000-0000-4000-8000-000000000001', 'hostile-content', 'Hostile content', 5, '<p>Safe paragraph.</p><img src="x" onerror="window.__xss=1"><script>window.__xss=1</script><a href="javascript:window.__xss=1">bad</a>', 'published');
+
+ALTER TABLE public.companion_files DROP CONSTRAINT IF EXISTS companion_files_kind_check;
+ALTER TABLE public.companion_files ADD CONSTRAINT companion_files_kind_check CHECK (kind IN ('companion_pdf','book_pdf'));
+INSERT INTO public.companion_files (id, kind, storage_path, original_name, size_bytes, sha256, version, is_current, process_status, chunk_count) VALUES ('f0000000-0000-4000-8000-000000000002','book_pdf','book/marketing-reclassified/v1-bookbook0000.pdf','book.pdf',999,'bookbook0000bookbook0000bookbook0000bookbook0000bookbook0000bookb',1,true,'indexed',0);

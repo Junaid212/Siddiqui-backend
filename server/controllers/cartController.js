@@ -13,6 +13,7 @@ const { sendOrderConfirmationEmail } = require("../utils/orderEmail");
 const { ensureCustomerAccount } = require("../utils/customerAuth");
 const { escapeLike } = require("../utils/requireCustomer");
 const { saveOrderMetadata, getOrderMetadata, getOrdersByEmail } = require("../utils/orderStore");
+const { getCurrentFilePath } = require("../utils/entitlements");
 if (process.env.NODE_ENV !== "staging") {
   require("dotenv").config();
 }
@@ -290,9 +291,15 @@ exports.getCustomerOrders = async (req, res) => {
       .filter((o) => (seen.has(o.id) ? false : (seen.add(o.id), true)))
       .sort((x, y) => String(y.created_at || "").localeCompare(String(x.created_at || "")));
 
+    // Is a book PDF published for download? (only tells the page whether to show the second button; the download itself is checked again on the server)
+    let bookPdfAvailable = false;
+    try { bookPdfAvailable = !!(await getCurrentFilePath("book_pdf")); } catch { bookPdfAvailable = false; }
+
     const enriched = (orders || []).map((order) => {
       const meta = getOrderMetadata(order.id) || {};
       return {
+        book_pdf_available: bookPdfAvailable,
+        book_download_count: Number(order.book_download_count) || 0,
         id: order.id,
         order_number: order.order_number || meta.orderNumber || `ORD-${order.id?.substring(0, 8).toUpperCase()}`,
         book_name: order.book_name || meta.productName || "Digital Publication",
