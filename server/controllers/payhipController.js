@@ -212,6 +212,17 @@ async function notifyUnsupportedProduct({ transactionId, item, payload }) {
 }
 
 /**
+ * GET /api/webhooks/payhip  (also /api/payment/payhip/webhook)
+ * Reachability check you can open in a browser: proves the address is live over HTTPS and says whether the secret is set.
+ * Reveals nothing else; it never lists or changes orders.
+ */
+exports.payhipWebhookStatus = (_req, res) => {
+  const key = (process.env.PAYHIP_API_KEY || "").trim();
+  res.set("Cache-Control", "no-store");
+  res.json({ ok: true, endpoint: "payhip-webhook", accepts: "POST", signatureKeyConfigured: Boolean(key) && !key.includes("placeholder") });
+};
+
+/**
  * POST /api/webhooks/payhip
  * Official Payhip Webhook Endpoint (paid and refunded)
  */
@@ -234,6 +245,9 @@ exports.payhipWebhook = async (req, res) => {
   const isValid = verifyPayhipSignature(payload, req.headers);
   if (!isValid) {
     console.warn("[payhipWebhook] Webhook signature verification failed.");
+    // Shown in the admin "Webhook deliveries" tab so a wrong PAYHIP_API_KEY is visible. One bucket for all failures (a counter),
+    // so nobody can fill the table by sending many different bad requests.
+    recordWebhook({ provider: "payhip", eventType: "signature_check", transactionId: "bad-signature", outcome: "rejected", httpStatus: 400, detail: { reason: "bad_or_missing_signature", hint: "The Payhip API key saved on the server does not match the one in Payhip (Settings > Developer)." } });
     return res.status(400).json({ error: "Invalid webhook signature." });
   }
 

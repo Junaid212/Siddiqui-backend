@@ -14,7 +14,7 @@ const {
 const { validateDiscount } = require("../controllers/discountController");
 const { getCustomerOrders, checkOwnership } = require("../controllers/cartController");
 const { createPayPalOrder, capturePayPalOrder, paypalWebhook } = require("../controllers/paypalController");
-const { payhipWebhook, claimPayhipPurchase, confirmPayhipClaim } = require("../controllers/payhipController");
+const { payhipWebhook, payhipWebhookStatus, claimPayhipPurchase, confirmPayhipClaim } = require("../controllers/payhipController");
 const { requireCustomer } = require("../utils/requireCustomer");
 
 // Digital Products Catalog
@@ -29,7 +29,9 @@ router.post("/paypal/webhook", paypalWebhook);
 router.post("/webhooks/paypal", paypalWebhook);
 
 // Payhip Webhook & Secure Account Linking
+router.get("/payhip/webhook", payhipWebhookStatus);
 router.post("/payhip/webhook", payhipWebhook);
+router.get("/webhooks/payhip", payhipWebhookStatus);
 router.post("/webhooks/payhip", payhipWebhook);
 router.post("/claim-payhip-purchase", claimPayhipPurchase);
 router.post("/confirm-payhip-claim", confirmPayhipClaim);

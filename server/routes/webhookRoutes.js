@@ -9,11 +9,12 @@
 
 const express = require("express");
 const router = express.Router();
-const { payhipWebhook } = require("../controllers/payhipController");
+const { payhipWebhook, payhipWebhookStatus } = require("../controllers/payhipController");
 const { paypalWebhook } = require("../controllers/paypalController");
 const { stripeWebhook } = require("../controllers/paymentController");
 
 // Payhip Webhook (paid, refunded)
+router.get("/payhip", payhipWebhookStatus);
 router.post("/payhip", payhipWebhook);
 
 // PayPal Webhook (PAYMENT.CAPTURE.COMPLETED, PENDING, DENIED, REFUNDED)

@@ -191,6 +191,29 @@ test('P4. Full refund removes downloads, Ask SID and (for Online) the reader at 
   assert.equal((await call('GET', '/api/reader/books', { token: tok('ollie') })).status, 403);
 });
 
+test('P7. A free order (100% coupon, $0) is accepted and grants access exactly like a paid one', async () => {
+  const free = (key, name, txn, who) => send(evt('paid', txn, [real(key, name, { price: 0 })], `${who}@example.com`));
+  const r = await free('2H0Wr', 'Digital Companion', 'TXN-P7A', 'zerocomp');
+  assert.equal(r.status, 200); assert.ok(r.json.success);
+  const o = ordersOf('zerocomp@example.com')[0];
+  assert.equal(o.status, 'paid'); assert.equal(Number(o.amount), 0);
+  assert.equal((await call('GET', '/api/reader/books', { token: tok('zerocomp') })).status, 200, 'a free Companion order opens the reader');
+  assert.equal((await call('GET', '/api/ask-sid/access', { token: tok('zerocomp') })).json.edition, 'companion');
+  assert.equal((await free('Nr3Tp', 'Online Reading', 'TXN-P7B', 'zeroonl')).status, 200);
+  assert.equal((await call('GET', '/api/reader/books', { token: tok('zeroonl') })).status, 200, 'a free Online order opens the reader');
+});
+
+test('P8. A delivery with a wrong or missing secret is refused and grants nothing; the status address answers in a browser', async () => {
+  const bad = await send({ ...evt('paid', 'TXN-P8', [real('2H0Wr', 'Digital Companion')], 'badsig@example.com'), signature: 'not-the-right-signature' });
+  assert.equal(bad.status, 400);
+  assert.equal(ordersOf('badsig@example.com').length, 0, 'nothing is granted');
+  assert.equal((await send({ ...evt('paid', 'TXN-P8B', [real('2H0Wr', 'Digital Companion')], 'badsig2@example.com'), signature: '' })).status, 400, 'a missing signature is refused too');
+  for (const p of ['/api/webhooks/payhip', '/api/payment/payhip/webhook']) {
+    const s = await call('GET', p); assert.equal(s.status, 200); assert.equal(s.json.ok, true); assert.equal(s.json.signatureKeyConfigured, true);
+    assert.ok(!/orders|email|key"?\s*:\s*"/i.test(JSON.stringify({ ...s.json, signatureKeyConfigured: undefined })), 'the status page reveals nothing else');
+  }
+});
+
 test('P5. A duplicate webhook delivery does not create a second entitlement or launch position', async () => {
   assert.equal((await buyCompanion('TXN-P5', 'dupe')).status, 200);
   const again = await buyCompanion('TXN-P5', 'dupe'); assert.equal(again.status, 200); assert.ok(again.json.idempotent);
