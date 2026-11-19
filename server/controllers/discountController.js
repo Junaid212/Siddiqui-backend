@@ -11,12 +11,14 @@
 const fs = require("fs");
 const path = require("path");
 const supabase = require("../config/supabaseClient");
+const { cleanAppliesTo, appliesToLabel, couponCoversItems } = require("../utils/couponScope");
 if (process.env.NODE_ENV !== "staging") {
   require("dotenv").config();
 }
 
 // Candidate paths to shared admin coupons file
 const CANDIDATE_PATHS = [
+  ...(process.env.COUPONS_FILE ? [process.env.COUPONS_FILE] : []), // only set by tests
   "d:/Bright Media WORK/siddique-admin/server/src/data/coupons.json",
   path.resolve(__dirname, "../../../siddique-admin/server/src/data/coupons.json"),
   path.resolve(__dirname, "../../siddique-admin/server/src/data/coupons.json"),
@@ -54,6 +56,8 @@ function getAdminCoupons() {
 exports.validateDiscount = async (req, res) => {
   const code = (req.body.code || "").trim().toUpperCase();
   const subtotal = Number(req.body.subtotal) || 0;
+  // What is in the cart ([{ productId, accessType }]), so a coupon that "applies to" certain products can be checked.
+  const items = Array.isArray(req.body.items) ? req.body.items.slice(0, 50).map((i) => ({ productId: i && i.productId, accessType: i && i.accessType })) : undefined;
 
   if (!code) {
     return res.status(400).json({ valid: false, error: "Discount code is required." });
@@ -76,6 +80,7 @@ exports.validateDiscount = async (req, res) => {
         uses_count: foundAdmin.times_used || 0,
         active: foundAdmin.is_active !== false,
         expires_at: foundAdmin.expires_at,
+        applies_to: cleanAppliesTo(foundAdmin.applies_to),
       };
     }
 
@@ -85,7 +90,7 @@ exports.validateDiscount = async (req, res) => {
         const adminApiRes = await fetch("http://localhost:5001/api/public/coupons/validate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code, subtotal }),
+          body: JSON.stringify({ code, subtotal, items }),
         });
         if (adminApiRes.ok) {
           const apiData = await adminApiRes.json();
@@ -95,9 +100,14 @@ exports.validateDiscount = async (req, res) => {
               type: apiData.discount.type || "percentage",
               value: Number(apiData.discount.value || apiData.discount.discount_percentage),
               description: apiData.discount.description,
+              applies_to: cleanAppliesTo(apiData.discount.applies_to),
               active: true,
             };
           }
+        } else if (adminApiRes.status === 400) {
+          // The admin server knows this coupon and refused it for this cart (restricted product, expired, disabled, used up, minimum): say so.
+          const refused = await adminApiRes.json().catch(() => null);
+          if (refused && refused.error) return res.status(400).json({ valid: false, error: refused.error });
         }
       } catch (_) {}
     }
@@ -122,6 +132,7 @@ exports.validateDiscount = async (req, res) => {
             uses_count: dbCoupon.times_used || 0,
             active: dbCoupon.is_active !== false,
             expires_at: dbCoupon.expires_at,
+            applies_to: cleanAppliesTo(dbCoupon.applies_to),
           };
         }
       } catch (_) {}
@@ -158,6 +169,12 @@ exports.validateDiscount = async (req, res) => {
       });
     }
 
+    // "Applies to": a restricted coupon works only when the cart holds at least one product it covers (checked here for every source of coupons).
+    const appliesTo = cleanAppliesTo(discount.applies_to);
+    if (!couponCoversItems(appliesTo, items)) {
+      return res.status(400).json({ valid: false, error: `Coupon code '${code}' applies only to the ${appliesToLabel(appliesTo)}.` });
+    }
+
     // Calculate discount amount based on percentage
     let discountAmount = 0;
     if (discount.type === "percentage") {
@@ -173,6 +190,7 @@ exports.validateDiscount = async (req, res) => {
         type: discount.type,
         value: Number(discount.value),
         discount_percentage: Number(discount.value),
+        applies_to: appliesTo,
         description: discount.description,
         discountAmount: Math.round(discountAmount * 100) / 100,
         subtotalAfterDiscount: Math.max(0, Math.round((subtotal - discountAmount) * 100) / 100),

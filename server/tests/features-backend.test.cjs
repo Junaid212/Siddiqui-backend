@@ -27,6 +27,7 @@ const SEED = { ebooks: [{ id: BOOK, title: 'Marketing Reclassified', file_path: 
   row(ID.bob, { user_id: 'u-bob', email: 'bob@example.com', order_number: 'ORD-BOB-1', book_name: 'Marketing Reclassified — Digital Companion Edition', amount: 49, access_tier: 'companion', download_token: 'tok-bob-companion', book_download_count: 0 }),
 ] };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const COUPONS_TEST = path.join(require('node:os').tmpdir(), `backend-coupons-test-${process.pid}.json`);
 const children = [];
 
 function call(method, urlPath, { token, body, port = PORT, headers = {} } = {}) {
@@ -63,10 +64,14 @@ async function start(port, env) {
 }
 test.before(async () => {
   fs.writeFileSync(STORE, '{}'); fs.mkdirSync(LOCKS, { recursive: true });
-  await start(PORT, { FAKE_PG_SEED_SQL: path.join(__dirname, 'helpers', 'features-seed.sql') });
+  fs.writeFileSync(COUPONS_TEST, JSON.stringify([
+    { id: 'c1', code: 'LAUNCH30', discount_percentage: 30, discount_type: 'percentage', applies_to: ['companion'], is_active: true, min_order_amount: 0, max_uses: null, times_used: 0 },
+    { id: 'c2', code: 'WELCOME5', discount_percentage: 5, discount_type: 'percentage', is_active: true, min_order_amount: 0, max_uses: null, times_used: 0 },
+  ]));
+  await start(PORT, { FAKE_PG_SEED_SQL: path.join(__dirname, 'helpers', 'features-seed.sql'), COUPONS_FILE: COUPONS_TEST });
   await call('GET', '/api/reader/access', { token: tok('warmup') }); // let the in-memory database finish starting
 });
-test.after(() => { for (const c of children) c.kill(); for (const f of [DB, LOG, STORE, DB + '2']) if (fs.existsSync(f)) fs.unlinkSync(f); });
+test.after(() => { for (const c of children) c.kill(); for (const f of [DB, LOG, STORE, DB + '2', COUPONS_TEST]) if (fs.existsSync(f)) fs.unlinkSync(f); });
 
 // ---------------------------------------------------------------------------------------------------------------------
 // R. Online Reading
@@ -212,6 +217,47 @@ test('P8. A delivery with a wrong or missing secret is refused and grants nothin
     const s = await call('GET', p); assert.equal(s.status, 200); assert.equal(s.json.ok, true); assert.equal(s.json.signatureKeyConfigured, true);
     assert.ok(!/orders|email|key"?\s*:\s*"/i.test(JSON.stringify({ ...s.json, signatureKeyConfigured: undefined })), 'the status page reveals nothing else');
   }
+});
+
+test('D2. "Request new download link": only when the window is over or a file used its 3 downloads; a fresh 72 hours and 3 per file; at most 3 times; own orders only; My Orders shows Ask SID separately', async () => {
+  assert.equal((await buyCompanion('TXN-D2', 'dlr')).status, 200);
+  const order = ordersOf('dlr@example.com')[0]; const dl = () => call('GET', `/api/payment/download/${order.download_token}`);
+  const list = async () => (await call('GET', '/api/payment/my-orders', { token: tok('dlr') })).json;
+  const renew = (token = tok('dlr')) => call('POST', `/api/payment/orders/${order.id}/renew-download`, { token, body: {} });
+  let j = await list(); const mine = () => j.orders.find((o) => o.id === order.id);
+  assert.equal(mine().needs_download_renewal, false); assert.equal(mine().download_renewals_left, 3);
+  assert.equal(j.entitlement.edition, 'companion'); assert.ok(j.entitlement.askSidExpiresAt, 'Ask SID access has its own date, separate from the download window');
+  assert.equal((await renew()).status, 409, 'nothing to renew while the links are active');
+  assert.equal((await call('POST', `/api/payment/orders/${order.id}/renew-download`, { body: {} })).status, 401, 'sign-in required');
+  assert.equal((await renew('eve-token')).status, 404, "another customer cannot renew someone else's order");
+  for (let cycle = 1; cycle <= 3; cycle++) {
+    for (let i = 0; i < 3; i++) assert.equal((await dl()).status, 200, `download ${i + 1} of cycle ${cycle}`);
+    assert.equal((await dl()).status, 403, 'the 3 downloads are used up'); j = await list(); assert.equal(mine().needs_download_renewal, true);
+    const r = await renew(); assert.equal(r.status, 200, JSON.stringify(r.json)); assert.equal(r.json.renewalsLeft, 3 - cycle);
+    assert.ok(new Date(r.json.downloadExpiresAt).getTime() - Date.now() > 71 * 3600 * 1000, 'a fresh 72 hours');
+    j = await list(); assert.equal(mine().download_count, 0, 'the counter starts again'); assert.equal(mine().needs_download_renewal, false);
+  }
+  for (let i = 0; i < 3; i++) assert.equal((await dl()).status, 200); assert.equal((await dl()).status, 403);
+  const last = await renew(); assert.equal(last.status, 403); assert.equal(last.json.code, 'renewals_exhausted', 'only 3 renewals per order');
+  // the older e-mail request obeys the same limits (it used to reset the counters for anyone, any number of times)
+  const old = (email) => call('POST', '/api/payment/request-replacement', { body: { email } });
+  assert.equal((await old('dlr@example.com')).status, 403, 'exhausted renewals are refused here too');
+  assert.equal((await buyCompanion('TXN-D2B', 'dlactive')).status, 200); assert.equal((await old('dlactive@example.com')).status, 409, 'active links are not reset by the e-mail request');
+  // an Online Reading order has no downloads to renew
+  assert.equal((await buyOnline('TXN-D2C', 'dlonline')).status, 200); const on = ordersOf('dlonline@example.com')[0];
+  assert.equal((await call('POST', `/api/payment/orders/${on.id}/renew-download`, { token: tok('dlonline'), body: {} })).status, 403);
+});
+
+test('K2. discount codes "Applies to": LAUNCH30 only for the Digital Companion, ordinary codes unchanged (the customer API the checkout calls)', async () => {
+  const v = (b) => call('POST', '/api/payment/validate-discount', { body: b });
+  const COMP = { productId: '04b84648-3609-4b31-9ded-2486bacf1e74', accessType: 'companion' }, ONL = { productId: '04b84648-3609-4b31-9ded-2486bacf1e74', accessType: 'online' }, BOOK = { productId: 'b4492051-cce5-4213-974b-72c74da19196', accessType: 'download' };
+  const ok = await v({ code: 'launch30', subtotal: 49.99, items: [COMP] }); assert.equal(ok.status, 200, JSON.stringify(ok.json)); assert.equal(ok.json.valid, true); assert.deepEqual(ok.json.discount.applies_to, ['companion']); assert.equal(ok.json.discount.discountAmount, 15);
+  const no = await v({ code: 'LAUNCH30', subtotal: 20, items: [ONL] }); assert.equal(no.status, 400); assert.match(no.json.error, /applies only to the Digital Companion Edition/);
+  assert.equal((await v({ code: 'LAUNCH30', subtotal: 20, items: [BOOK] })).status, 400, 'another book');
+  assert.equal((await v({ code: 'LAUNCH30', subtotal: 49.99 })).status, 400, 'no cart given: cannot be confirmed, refused');
+  assert.equal((await v({ code: 'LAUNCH30', subtotal: 69.99, items: [ONL, COMP] })).status, 200, 'a cart that holds the Companion qualifies');
+  assert.equal((await v({ code: 'WELCOME5', subtotal: 20 })).status, 200); assert.equal((await v({ code: 'WELCOME5', subtotal: 20, items: [BOOK] })).status, 200); assert.deepEqual((await v({ code: 'WELCOME5', subtotal: 20 })).json.discount.applies_to, []);
+  assert.equal((await v({ code: 'NOSUCHCODE', subtotal: 20, items: [COMP] })).status, 404, 'an unknown code is still just invalid');
 });
 
 test('P5. A duplicate webhook delivery does not create a second entitlement or launch position', async () => {

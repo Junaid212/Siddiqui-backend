@@ -7,6 +7,7 @@ const {
   downloadProductFile,
   readOnlineBook,
   createAccessLink,
+  renewDownloadLink,
   serveAccessLink,
   requestReplacementLink,
   stripeWebhook,
@@ -58,6 +59,7 @@ router.get("/read", readOnlineBook);
 
 // Short-lived, order-bound links for signed-in customers (My Orders). No reusable credential is ever listed.
 router.post("/orders/:id/access-link", requireCustomer, createAccessLink);
+router.post("/orders/:id/renew-download", requireCustomer, renewDownloadLink);
 router.get("/access/:signed", serveAccessLink);
 
 // Secure Download Endpoint (Digital Companion Edition with valid license)

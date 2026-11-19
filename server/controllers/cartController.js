@@ -13,7 +13,8 @@ const { sendOrderConfirmationEmail } = require("../utils/orderEmail");
 const { ensureCustomerAccount } = require("../utils/customerAuth");
 const { escapeLike } = require("../utils/requireCustomer");
 const { saveOrderMetadata, getOrderMetadata, getOrdersByEmail } = require("../utils/orderStore");
-const { getCurrentFilePath } = require("../utils/entitlements");
+const { getCurrentFilePath, getActiveEntitlement } = require("../utils/entitlements");
+const { MAX_DOWNLOAD_RENEWALS, renewalsOf, downloadNeedsRenewal } = require("../utils/downloadWindow");
 if (process.env.NODE_ENV !== "staging") {
   require("dotenv").config();
 }
@@ -295,10 +296,20 @@ exports.getCustomerOrders = async (req, res) => {
     let bookPdfAvailable = false;
     try { bookPdfAvailable = !!(await getCurrentFilePath("book_pdf")); } catch { bookPdfAvailable = false; }
 
+    // Ask SID access is the CUSTOMER's (one current entitlement), not an order's: shown separately from the download window.
+    let entitlement = null;
+    try {
+      const ent = await getActiveEntitlement(email);
+      if (ent) entitlement = { edition: ent.edition, askSidExpiresAt: ent.ask_sid_expires_at || null };
+    } catch { entitlement = null; }
+
     const enriched = (orders || []).map((order) => {
       const meta = getOrderMetadata(order.id) || {};
       return {
         book_pdf_available: bookPdfAvailable,
+        // "Request new download link" (see utils/downloadWindow.js): shown only when the 72 hours are over or a file used its 3 downloads
+        needs_download_renewal: downloadNeedsRenewal(order),
+        download_renewals_left: Math.max(MAX_DOWNLOAD_RENEWALS - renewalsOf(order).length, 0),
         book_download_count: Number(order.book_download_count) || 0,
         id: order.id,
         order_number: order.order_number || meta.orderNumber || `ORD-${order.id?.substring(0, 8).toUpperCase()}`,
@@ -319,7 +330,7 @@ exports.getCustomerOrders = async (req, res) => {
       };
     });
 
-    return res.json({ orders: enriched, count: enriched.length });
+    return res.json({ orders: enriched, count: enriched.length, entitlement });
 
   } catch (err) {
     console.error("[getCustomerOrders] Error:", err);

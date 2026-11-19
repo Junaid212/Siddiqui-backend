@@ -8,6 +8,7 @@ const { sendOrderConfirmationEmail } = require("../utils/orderEmail");
 const { ensureCustomerAccount } = require("../utils/customerAuth");
 const { getProductFile, setProductFile } = require("../utils/productFileStore");
 const { saveOrderMetadata, getOrderMetadata, findOrderMetadataByToken } = require("../utils/orderStore");
+const { MAX_DOWNLOAD_RENEWALS, renewalsOf, downloadNeedsRenewal } = require("../utils/downloadWindow");
 if (process.env.NODE_ENV !== "staging") {
   require("dotenv").config();
 }
@@ -1000,6 +1001,58 @@ exports.downloadProductFile = async (req, res) => {
 };
 
 /**
+ * A fresh download window: 72 hours and 3 new downloads of EACH file. The renewal is written into the order (raw_metadata.download_renewals),
+ * which is what limits how often it can be used. Optionally rotates the e-mailed download token.
+ */
+async function applyDownloadRenewal(order, { token } = {}) {
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 72 * 3600 * 1000).toISOString();
+  const raw = order.raw_metadata && typeof order.raw_metadata === "object" ? order.raw_metadata : {};
+  const patch = {
+    download_expires_at: expiresAt,
+    download_count: 0,
+    book_download_count: 0,
+    raw_metadata: { ...raw, download_renewals: [...renewalsOf(order), now.toISOString()] },
+  };
+  if (token) patch.download_token = token;
+  saveOrderMetadata(order.id, { download_expires_at: expiresAt, download_count: 0, ...(token ? { download_token: token } : {}) });
+  const res = await executeWithSchemaFallback((p) => supabase.from("orders").update(p).eq("id", order.id), patch);
+  if (res && res.error) throw new Error(res.error.message);
+  return expiresAt;
+}
+
+/**
+ * POST /api/payment/orders/:id/renew-download   (signed-in customer, own order only)
+ * "Request new download link": allowed once the 72 hours are over or a file has used its 3 downloads; gives a new 72 hours and 3 downloads per file;
+ * at most MAX_DOWNLOAD_RENEWALS times per order. The download itself still goes through the normal short-lived link and every normal check.
+ */
+exports.renewDownloadLink = async (req, res) => {
+  const user = req.authUser;
+  const orderId = String(req.params.id || "");
+  if (!UUID_RE.test(orderId)) return res.status(400).json({ error: "Invalid order." });
+  try {
+    const { data: order, error } = await supabase.from("orders").select("*").eq("id", orderId).maybeSingle();
+    if (error) return res.status(500).json({ error: "Could not look up the order." });
+    const sameEmail = order && order.email && String(order.email).trim().toLowerCase() === String(user.email).trim().toLowerCase();
+    const mine = order && ((order.user_id && order.user_id === user.id) || sameEmail);
+    if (!mine) return res.status(404).json({ error: "Order not found." });
+    if (isRefundedOrder(order)) return res.status(403).json({ error: "This order has been refunded. Access is revoked." });
+    if (order.status !== "paid" && order.status !== "successful") return res.status(403).json({ error: "Payment verification required." });
+    const gate = await checkCompanionDownload(order);
+    if (!gate.allowed) return res.status(403).json({ error: "Your current edition does not include Companion downloads.", code: "not_entitled" });
+    if (!downloadNeedsRenewal(order)) return res.status(409).json({ error: "Your download links are still active.", code: "still_active" });
+    const used = renewalsOf(order).length;
+    if (used >= MAX_DOWNLOAD_RENEWALS) return res.status(403).json({ error: `All ${MAX_DOWNLOAD_RENEWALS} renewals for this order have been used. Please contact info@siddiqui.digital and we will help.`, code: "renewals_exhausted" });
+    const downloadExpiresAt = await applyDownloadRenewal(order);
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ ok: true, downloadExpiresAt, renewalsLeft: MAX_DOWNLOAD_RENEWALS - used - 1 });
+  } catch (err) {
+    console.error("[renewDownloadLink] Error:", err);
+    return res.status(500).json({ error: "Could not renew the download links." });
+  }
+};
+
+/**
  * POST /api/payment/request-replacement — Request a replacement link via email
  */
 exports.requestReplacementLink = async (req, res) => {
@@ -1031,31 +1084,34 @@ exports.requestReplacementLink = async (req, res) => {
       return res.status(404).json({ error: "No matching orders found for this email address." });
     }
 
-    const paidOrder = orders.find(o => o.status === "paid" || o.status === "successful");
+    const paidOrders = orders.filter(o => (o.status === "paid" || o.status === "successful") && !isRefundedOrder(o));
+    // prefer an order whose links actually need renewing (the buyer asked because they stopped working)
+    const paidOrder = paidOrders.find((o) => downloadNeedsRenewal(o)) || paidOrders[0];
     if (!paidOrder) {
       return res.status(400).json({ error: "No active paid orders found. The order may have been refunded or is still pending." });
     }
 
-    const newExpiresAt = new Date(Date.now() + 72 * 3600 * 1000).toISOString();
-    const newDownloadToken = crypto.randomBytes(32).toString("hex");
-
-    saveOrderMetadata(paidOrder.id, {
-      download_token: newDownloadToken,
-      download_expires_at: newExpiresAt,
-      download_count: Math.min(paidOrder.download_count || 0, 2),
-    });
-
-    await executeWithSchemaFallback(
-      (payload) => supabase.from("orders").update(payload).eq("id", paidOrder.id),
-      {
-        download_token: newDownloadToken,
-        download_expires_at: newExpiresAt,
-        download_count: Math.min(paidOrder.download_count || 0, 2),
-      }
-    );
-
     const clientUrl = process.env.CLIENT_URL || "https://siddiqui.digital";
-    const downloadUrl = `${clientUrl}/order-success?session_id=${paidOrder.stripe_session_id}&token=${newDownloadToken}`;
+    const isOnlineTier = String(paidOrder.access_tier || "").toLowerCase() === "online" || Number(paidOrder.download_limit) === 0;
+    let downloadUrl;
+    if (isOnlineTier) {
+      // Online Reading has no files to download: nothing to renew; the e-mail just points to My Orders.
+      downloadUrl = `${clientUrl}/my-orders`;
+    } else {
+      // Same rules as the "Request new download link" button in My Orders: only when the 72 hours are over or a file has used its 3 downloads,
+      // and only 3 times per order. Without this, anyone could reset the counters again and again.
+      if (!downloadNeedsRenewal(paidOrder)) {
+        return res.status(409).json({ error: "Your download links are still active. Sign in and open My Orders to download, or use the link in your order e-mail.", code: "still_active" });
+      }
+      if (renewalsOf(paidOrder).length >= MAX_DOWNLOAD_RENEWALS) {
+        return res.status(403).json({ error: `All ${MAX_DOWNLOAD_RENEWALS} renewals for this order have been used. Please contact info@siddiqui.digital and we will help.`, code: "renewals_exhausted" });
+      }
+      const newDownloadToken = crypto.randomBytes(32).toString("hex");
+      await applyDownloadRenewal(paidOrder, { token: newDownloadToken });
+      downloadUrl = paidOrder.payment_provider === "payhip"
+        ? `${clientUrl}/order-success?provider=payhip&token=${newDownloadToken}&order_id=${paidOrder.id}`
+        : `${clientUrl}/order-success?session_id=${paidOrder.stripe_session_id}&token=${newDownloadToken}`;
+    }
 
     await sendOrderConfirmationEmail({
       to: paidOrder.email || cleanEmail,
