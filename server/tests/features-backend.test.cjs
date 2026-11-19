@@ -160,6 +160,8 @@ test('P2. Companion purchase: downloads and Ask SID yes; reader yes; no Online e
   assert.equal(acc.json.allowance.dailyLimit, 5); assert.equal(acc.json.allowance.totalLimit, 150); assert.equal(acc.json.allowance.launchOffer, true);
   const dl = ordersOf('carol@example.com')[0];
   const file = await call('GET', `/api/payment/download/${dl.download_token}`); assert.equal(file.status, 200); assert.match(file.text, /^%PDF/);
+  // the Companion Pack is named for what it is, not like the book ("Marketing_Reclassified.pdf" looked like the book itself)
+  assert.match(file.headers['content-disposition'] || '', /filename="Marketing_Reclassified_Companion_Pack\.pdf"/);
 });
 
 test('P3. Upgrade: Online access ends, Companion access starts, the 12-month period starts on the upgrade date', async () => {

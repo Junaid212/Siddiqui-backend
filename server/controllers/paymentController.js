@@ -987,7 +987,12 @@ exports.downloadProductFile = async (req, res) => {
     const safeTitle = (product?.title || order.book_name || "Digital-Publication")
       .replace(/[^a-zA-Z0-9_-]/g, "_")
       .replace(/_+/g, "_");
-    const filename = wantBook ? "Marketing_Reclassified_Book.pdf" : `${safeTitle}.pdf`;
+    // Each file is named for what it IS. The Companion Pack used to be saved under the plain product title ("Marketing_Reclassified.pdf"),
+    // which looks exactly like the book. (Both files are PDFs: the dashboard only accepts PDF uploads.)
+    const catalogBook = isCatalogProduct(product, order);
+    const filename = wantBook
+      ? "Marketing_Reclassified_Book.pdf"
+      : catalogBook ? "Marketing_Reclassified_Companion_Pack.pdf" : `${safeTitle}.pdf`;
 
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
